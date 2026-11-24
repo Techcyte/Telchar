@@ -864,6 +864,9 @@ fn run_daemon() -> io::Result<()> {
             service.check()?;
         }
         hook_delivery_service.check()?;
+        if let Some(service) = callback_service.as_mut() {
+            service.check()?;
+        }
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
             shutdown_daemon_services(
                 &mut callback_service,
@@ -874,6 +877,10 @@ fn run_daemon() -> io::Result<()> {
                 &mut recovery_services,
             )?;
             return Ok(());
+        }
+        if !shared_builds.callback_available() {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
         }
         match singleton_ownership.admission_available() {
             Ok(true) => {}

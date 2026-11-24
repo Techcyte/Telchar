@@ -237,11 +237,23 @@ impl SharedBuildFollower {
 #[derive(Default)]
 pub struct SharedBuildRegistry {
     active: Mutex<HashMap<String, Arc<ActiveBuild>>>,
+    callback_unavailable: std::sync::atomic::AtomicBool,
 }
 
 impl SharedBuildRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_callback_available(&self, available: bool) {
+        self.callback_unavailable
+            .store(!available, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn callback_available(&self) -> bool {
+        !self
+            .callback_unavailable
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn acquire(&self, build_key: &str) -> SharedBuildAccess<'_> {

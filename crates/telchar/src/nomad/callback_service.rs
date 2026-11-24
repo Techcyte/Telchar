@@ -33,6 +33,50 @@ pub struct NomadCallbackService {
     drain_timeout: std::time::Duration,
 }
 
+struct CallbackAvailability {
+    shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
+    unavailable_since: Option<Instant>,
+}
+
+impl CallbackAvailability {
+    fn new(shared_builds: Arc<crate::shared_build::SharedBuildRegistry>) -> Self {
+        Self {
+            shared_builds,
+            unavailable_since: None,
+        }
+    }
+
+    fn accept_ready(&mut self) {
+        self.unavailable_since = None;
+        self.shared_builds.set_callback_available(true);
+    }
+
+    fn accept_failed(&mut self, error: &io::Error, now: Instant) -> io::Result<()> {
+        self.shared_builds.set_callback_available(false);
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENFILE | libc::EMFILE | libc::ENOBUFS | libc::ENOMEM)
+        ) && error.kind() != io::ErrorKind::Interrupted
+        {
+            return Err(io::Error::new(
+                error.kind(),
+                "Nomad callback listener failed",
+            ));
+        }
+        let since = *self.unavailable_since.get_or_insert(now);
+        if now.saturating_duration_since(since) >= Duration::from_secs(30) {
+            return Err(io::Error::other("Nomad callback listener recovery expired"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CallbackAvailability {
+    fn drop(&mut self) {
+        self.shared_builds.set_callback_available(false);
+    }
+}
+
 impl NomadCallbackService {
     #[allow(clippy::too_many_arguments)]
     pub fn start(
@@ -57,6 +101,7 @@ impl NomadCallbackService {
         let next_connection = Arc::new(AtomicU64::new(0));
         let drain_timeout = callback.shutdown_drain_timeout();
         let listener = std::thread::spawn(move || {
+            let mut availability = CallbackAvailability::new(Arc::clone(&shared_builds));
             while !listener_shutdown.load(Ordering::Acquire) {
                 {
                     let mut workers = listener_workers
@@ -77,10 +122,21 @@ impl NomadCallbackService {
                 let mut connection = match listener.accept() {
                     Ok((connection, _)) => connection,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        if availability.unavailable_since.is_some() {
+                            match std::fs::File::open("/dev/null") {
+                                Ok(_) => availability.accept_ready(),
+                                Err(error) => availability.accept_failed(&error, Instant::now())?,
+                            }
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        availability.accept_failed(&error, Instant::now())?;
+                        tracing::warn!(event = "nomad.callback.listener_unavailable", error_kind = ?error.kind(), "Nomad callback listener admission closed");
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
                 };
                 let Some(permit) =
                     ConnectionPermit::acquire(Arc::clone(&active), callback.maximum_connections())
@@ -92,7 +148,15 @@ impl NomadCallbackService {
                     continue;
                 };
                 let identity = next_connection.fetch_add(1, Ordering::Relaxed);
-                let shutdown_connection = connection.try_clone()?;
+                let shutdown_connection = match connection.try_clone() {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        availability.accept_failed(&error, Instant::now())?;
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                };
+                availability.accept_ready();
                 let mut registered = listener_connections
                     .lock()
                     .map_err(|_| io::Error::other("Nomad callback registry lock failed"))?;
@@ -152,6 +216,21 @@ impl NomadCallbackService {
             listener: Some(listener),
             drain_timeout,
         })
+    }
+
+    pub fn check(&mut self) -> io::Result<()> {
+        if self
+            .listener
+            .as_ref()
+            .is_some_and(|listener| listener.is_finished())
+        {
+            let listener = self.listener.take().expect("finished callback listener");
+            listener
+                .join()
+                .map_err(|_| io::Error::other("Nomad callback listener panicked"))??;
+            return Err(io::Error::other("Nomad callback listener stopped"));
+        }
+        Ok(())
     }
 
     pub fn active_connections(&self) -> io::Result<usize> {
@@ -1424,6 +1503,82 @@ mod tests {
     }
 
     #[test]
+    fn listener_failure_closes_admission_and_surfaces_to_supervisor() {
+        let shared = Arc::new(crate::shared_build::SharedBuildRegistry::new());
+        let listener_shared = Arc::clone(&shared);
+        let listener = std::thread::spawn(move || {
+            let _availability = super::CallbackAvailability::new(listener_shared);
+            Err(io::Error::other("listener failed"))
+        });
+        while !listener.is_finished() {
+            std::thread::yield_now();
+        }
+        let mut service = super::NomadCallbackService {
+            shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            connections: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            workers: Arc::new(Mutex::new(Vec::new())),
+            listener: Some(listener),
+            drain_timeout: Duration::from_millis(10),
+        };
+        assert!(!shared.callback_available());
+        assert!(service.check().is_err());
+    }
+
+    #[test]
+    fn descriptor_pressure_recovers_or_expires_with_admission_closed() {
+        let shared = Arc::new(crate::shared_build::SharedBuildRegistry::new());
+        let mut availability = super::CallbackAvailability::new(Arc::clone(&shared));
+        let now = Instant::now();
+        availability
+            .accept_failed(&io::Error::from_raw_os_error(24), now)
+            .unwrap();
+        assert!(!shared.callback_available());
+        availability.accept_ready();
+        assert!(shared.callback_available());
+        availability
+            .accept_failed(&io::Error::from_raw_os_error(24), now)
+            .unwrap();
+        assert!(
+            availability
+                .accept_failed(
+                    &io::Error::from_raw_os_error(24),
+                    now + Duration::from_secs(30)
+                )
+                .is_err()
+        );
+        assert!(!shared.callback_available());
+        assert!(
+            availability
+                .accept_failed(
+                    &io::Error::new(io::ErrorKind::PermissionDenied, "listener denied"),
+                    now
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn descriptor_exhaustion_preserves_listener_and_recovers_health() {
+        let result = std::process::Command::new("prlimit")
+            .args(["--nofile=256:256", "--"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "nomad::callback_service::tests::health_requests_release_completed_workers",
+                "--test-threads=1",
+            ])
+            .env("TELCHAR_TEST_CALLBACK_DESCRIPTOR_PRESSURE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
     fn health_requests_release_completed_workers() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
@@ -1492,6 +1647,7 @@ maximum_diagnostic_bytes = 1024
         let database = telchar_test_support::postgres::PostgresFixture::start();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        let shared = Arc::new(crate::shared_build::SharedBuildRegistry::new());
         let mut service = super::NomadCallbackService::start(
             listener,
             config.nomad_callback().unwrap().clone(),
@@ -1500,11 +1656,52 @@ maximum_diagnostic_bytes = 1024
             crate::store::daemon::GatewayStoreEndpoint::parse("unix:///missing-gateway.sock")
                 .unwrap(),
             Duration::from_secs(60),
-            Arc::new(crate::shared_build::SharedBuildRegistry::new()),
+            Arc::clone(&shared),
             None,
             crate::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
         )
         .unwrap();
+        if std::env::var_os("TELCHAR_TEST_CALLBACK_DESCRIPTOR_PRESSURE").is_some() {
+            let workers = service.workers.lock().unwrap();
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut files = Vec::new();
+            loop {
+                match std::fs::File::open("/dev/null") {
+                    Ok(file) => files.push(file),
+                    Err(error) => {
+                        assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                        break;
+                    }
+                }
+            }
+            client
+                .write_all(b"GET /healthz HTTP/1.1\r\nHost: gateway\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            drop(workers);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while shared.callback_available() {
+                assert!(
+                    Instant::now() < deadline,
+                    "callback admission remained available under FD exhaustion"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            service.check().unwrap();
+            drop(files);
+            drop(client);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !shared.callback_available() {
+                service.check().unwrap();
+                assert!(
+                    Instant::now() < deadline,
+                    "callback admission did not recover"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         for _ in 0..32 {
             let mut client = TcpStream::connect(address).unwrap();
             client

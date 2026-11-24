@@ -46,6 +46,7 @@ assert !cfg.services.openssh.enable;
 assert !(cfg.systemd.services ? telchar-sshd);
 assert !(cfg.systemd.services.telchar.environment ? TELCHAR_DATABASE_URL);
 assert cfg.systemd.services.telchar.serviceConfig.User == "telchar";
+assert cfg.systemd.services.telchar.serviceConfig.LimitNOFILE == 524288;
 assert cfg.systemd.services.telchar.serviceConfig.StateDirectory == "telchar";
 assert !(cfg.systemd.services.telchar.environment ? TELCHAR_ADMIN_SOCKET);
 assert

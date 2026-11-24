@@ -277,6 +277,7 @@ in
         ExecStartPre = lib.optional (cfg.database.rootCertificateFile != null) databaseValidator;
         Restart = "on-failure";
         RestartSec = "5s";
+        LimitNOFILE = 524288;
         LoadCredential = credentialFiles;
         BindReadOnlyPaths = lib.optional (
           cfg.nomad.tokenFile != null

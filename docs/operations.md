@@ -319,6 +319,13 @@ log export queues hold at most 256 records each, with batches of at most 64;
 exports have a one-second timeout. Telemetry shutdown waits at most three seconds.
 Collector availability does not control protocol relay or local diagnostics.
 Completed callback service workers are joined and removed during normal acceptance.
+The NixOS service sets both file-descriptor limits to 524288. Callback listener
+resource exhaustion closes admission and retries at 100 ms intervals for up to
+30 seconds. Admission resumes when descriptor allocation recovers. Listener
+termination or exhausted recovery propagates to daemon supervision, allowing
+systemd's failure restart policy to restore service. Existing callback workers
+continue during transient pressure. SSH/store ping alone does not establish
+Nomad execution readiness.
 
 An isolated 32-CPU-host probe measured seven threads, 11,496 KiB RSS and eight file
 descriptors per idle frontend; four concurrent frontends used 28 threads. These are

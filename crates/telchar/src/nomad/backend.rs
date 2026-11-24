@@ -544,6 +544,12 @@ impl NomadClient {
         live_log_queue_bytes: usize,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
+        if !shared_builds.callback_available() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Nomad callback listener unavailable",
+            ));
+        }
         let profile = self
             .config
             .select_resource_profile(execution.build().required_system_features())
@@ -596,6 +602,12 @@ impl NomadClient {
         }
         let mut attempt_count = 1_usize;
         let result = loop {
+            if !shared_builds.callback_available() {
+                break Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Nomad callback listener unavailable",
+                ));
+            }
             let result = bounded.execute_attempt(
                 database,
                 execution,
