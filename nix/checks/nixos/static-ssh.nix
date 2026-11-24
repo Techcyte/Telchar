@@ -122,6 +122,7 @@
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts join shared_builds using (derivation_path) where derivation_path like '%telchar-" + mode + "-%' and shared_builds.state = 'succeeded' and shared_builds.backend_kind = 'static-ssh'\" | grep -qx 3")
         gateway.succeed("systemctl restart telchar-daemon.service")
         gateway.wait_for_unit("telchar-daemon.service")
+        gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
         stock_client.succeed(nix + "build --store " + store + " --no-link " + shlex.quote(roots["direct"] + "^*") + " >/tmp/reuse.out 2>/tmp/reuse.err || { cat /tmp/reuse.err >&2; exit 1; }")
       '';
     };
