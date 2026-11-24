@@ -48,6 +48,50 @@ optional local PostgreSQL, host-store permissions, certificate installation, and
 Nomad-token installation. These helpers are deployment policy; none are imported
 by the public Telchar service module. Supply `telcharSshCommand` as above.
 
+## Minimal AWS gateway with static SSH builders
+
+Use two operator-provisioned NixOS EC2 instances in one private network: a
+single-active gateway with local PostgreSQL, and a trusted SSH builder. No Vault,
+RDS, Nomad, instance discovery, or AWS API credentials are required by this
+composition. It does not provision EC2 instances, security groups, or disks.
+
+Gateway module:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  imports = [ inputs.telchar.nixosModules.default ./aws-ssh.nix ];
+  _module.args.telcharSshCommand = inputs.telchar.lib.sshForcedCommand;
+  services.telchar.package = inputs.telchar.packages.${pkgs.system}.telchar;
+  users.users.telchar.openssh.authorizedKeys.keys = [
+    # Build clients' operator-provided public keys.
+  ];
+}
+```
+
+Import `ssh-builder.nix` on the builder; set its authorized key to the gateway's
+public key. Replace `builder.internal.example.com` in `aws-ssh.nix` with your
+builder's private DNS name. Both instances use `x86_64-linux` in this example.
+Keep normal administrator SSH access separate from the restricted build users.
+
+Provision the gateway private key at `/var/lib/telchar/ssh/id_ed25519`, owned by
+`telchar`, mode `0600`. Install the builder's independently verified SSH host key
+in `/var/lib/telchar/ssh/known_hosts`, owned by `telchar`; do not disable host-key
+checking or put private keys in Nix expressions/the Nix store. The builder account
+is a trusted Nix-daemon user, not a hostile-tenant boundary.
+
+Allow client SSH to the gateway only from your client networks; allow builder SSH
+only from the gateway security group/private network. Neither PostgreSQL nor a
+Nomad callback port needs public exposure. Size and persist gateway `/nix` and
+`/var/lib` (including PostgreSQL, import spool and GC roots) on EBS; do not replace
+or terminate instances as a persistence strategy. Supply ordinary NixOS EC2 boot,
+filesystem and `system.stateVersion` configuration separately.
+
+Clients use `--builders 'ssh-ng://telchar@gateway.example.com x86_64-linux'`
+with their local Nix daemon. Never direct the gateway's own store workloads back
+through itself. This example builds remotely; it does not publish images or
+execute generated deployment commands.
+
 ## AWS, Vault, external PostgreSQL, and Nomad workers
 
 `aws.nix` composes the dedicated-host example with `vault-aws.nix` and its
