@@ -93,12 +93,93 @@ fn stored_load_error(phase: StoredLoadFailurePhase) -> io::Error {
     })
 }
 
-fn dependency_realization_error(error: &io::Error) -> io::Error {
-    io::Error::other(StoredLoadFailure {
-        phase: StoredLoadFailurePhase::DependencyRealization,
-        dependency_phase: crate::store::export::dependency_realization_failure_phase(error),
-        dependency_result: crate::store::export::dependency_realization_failure_result(error),
-    })
+type StoredInputs = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
+
+fn load_derivation(
+    path: &std::path::Path,
+    backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
+    remaining_bytes: &mut u64,
+) -> io::Result<Vec<u8>> {
+    let contents = crate::store::export::load_stored_derivation(
+        path,
+        (*remaining_bytes).min(16 * 1024 * 1024),
+        backend,
+    )?;
+    *remaining_bytes = remaining_bytes
+        .checked_sub(contents.len() as u64)
+        .ok_or_else(|| stored_load_error(StoredLoadFailurePhase::RootExport))?;
+    Ok(contents)
+}
+
+struct StoredBuilds<'a, B: ?Sized> {
+    backend: &'a mut B,
+    roots: &'a mut dyn crate::store::export::TemporaryRoots,
+    backends: &'a [BackendTarget],
+    remaining_bytes: u64,
+    visiting: BTreeSet<Vec<u8>>,
+    completed: BTreeSet<Vec<u8>>,
+    builds: Vec<BuildRequest>,
+}
+
+impl<B: crate::store::export::StoreExportBackend + ?Sized> StoredBuilds<'_, B> {
+    fn load(mut self, path: &std::path::Path) -> io::Result<Vec<BuildRequest>> {
+        self.visit(path)?;
+        Ok(self.builds)
+    }
+
+    fn visit(&mut self, path: &std::path::Path) -> io::Result<()> {
+        let key = path.as_os_str().as_encoded_bytes().to_vec();
+        if self.completed.contains(&key) {
+            return Ok(());
+        }
+        if self.visiting.len() >= 128
+            || self.completed.len() + self.visiting.len() >= 1024
+            || !self.visiting.insert(key.clone())
+        {
+            return Err(stored_load_error(StoredLoadFailurePhase::DependencyParse));
+        }
+        self.roots.retain(&key)?;
+        let (request, inputs) = BuildRequest::load_stored_with_inputs(
+            path,
+            self.backend,
+            self.backends,
+            &mut self.remaining_bytes,
+        )?;
+        for (input_path, output_names) in inputs {
+            let input_path = std::path::Path::new(
+                std::str::from_utf8(&input_path)
+                    .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyPath))?,
+            );
+            let contents = load_derivation(input_path, self.backend, &mut self.remaining_bytes)?;
+            let input = derivation::parse(&contents)
+                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
+            let mut missing = false;
+            for name in output_names {
+                let (_, output, _, _) = input
+                    .outputs
+                    .iter()
+                    .find(|(candidate, _, _, _)| candidate == &name)
+                    .ok_or_else(|| stored_load_error(StoredLoadFailurePhase::SelectedOutput))?;
+                self.roots.retain(output)?;
+                let output = std::path::Path::new(
+                    std::str::from_utf8(output)
+                        .map_err(|_| stored_load_error(StoredLoadFailurePhase::SelectedOutput))?,
+                );
+                match self.backend.query_path_info(output) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => missing = true,
+                    Err(error) => return Err(error),
+                }
+            }
+            if missing {
+                self.visit(input_path)?;
+            }
+        }
+        self.visiting.remove(&key);
+        self.completed.insert(key);
+        self.builds.push(request);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,13 +248,36 @@ impl BuildRequest {
         backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
         backends: &[BackendTarget],
     ) -> io::Result<Self> {
-        const MAXIMUM_STORED_DERIVATION_BYTES: u64 = 16 * 1024 * 1024;
-        let contents = crate::store::export::load_stored_derivation(
-            derivation_path,
-            MAXIMUM_STORED_DERIVATION_BYTES,
+        Self::load_stored_with_inputs(derivation_path, backend, backends, &mut (64 * 1024 * 1024))
+            .map(|(request, _)| request)
+    }
+
+    pub fn load_stored_builds(
+        derivation_path: &std::path::Path,
+        backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
+        roots: &mut dyn crate::store::export::TemporaryRoots,
+        backends: &[BackendTarget],
+    ) -> io::Result<Vec<Self>> {
+        StoredBuilds {
             backend,
-        )
-        .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootExport))?;
+            roots,
+            backends,
+            remaining_bytes: 64 * 1024 * 1024,
+            visiting: BTreeSet::new(),
+            completed: BTreeSet::new(),
+            builds: Vec::new(),
+        }
+        .load(derivation_path)
+    }
+
+    fn load_stored_with_inputs(
+        derivation_path: &std::path::Path,
+        backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
+        backends: &[BackendTarget],
+        remaining_bytes: &mut u64,
+    ) -> io::Result<(Self, StoredInputs)> {
+        let contents = load_derivation(derivation_path, backend, remaining_bytes)
+            .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootExport))?;
         let mut request = Self::from_stored_derivation(
             derivation_path.as_os_str().as_encoded_bytes(),
             &contents,
@@ -182,42 +286,21 @@ impl BuildRequest {
         .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootAdmission))?;
         let stored = derivation::parse(&contents)
             .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootParse))?;
-        let dependency_derivations = stored
-            .input_derivations
-            .iter()
-            .flat_map(|(derivation, output_names)| {
-                output_names.iter().map(|output_name| {
-                    let mut target = derivation.clone();
-                    target.push(b'!');
-                    target.extend_from_slice(output_name);
-                    target
-                })
-            })
-            .collect::<Vec<_>>();
-        if !dependency_derivations.is_empty() {
-            backend
-                .build_paths_with_results(&dependency_derivations)
-                .map_err(|error| dependency_realization_error(&error))?;
-        }
         request.input_sources = stored.input_sources;
-        for (input_derivation, output_names) in stored.input_derivations {
+        for (input_derivation, output_names) in &stored.input_derivations {
             let input_path = std::path::Path::new(
-                std::str::from_utf8(&input_derivation)
+                std::str::from_utf8(input_derivation)
                     .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyPath))?,
             );
-            let input_contents = crate::store::export::load_stored_derivation(
-                input_path,
-                MAXIMUM_STORED_DERIVATION_BYTES,
-                backend,
-            )
-            .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
+            let input_contents = load_derivation(input_path, backend, remaining_bytes)
+                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
             let input = derivation::parse(&input_contents)
                 .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
             for output_name in output_names {
                 let output_path = input
                     .outputs
                     .iter()
-                    .find(|(name, _, _, _)| name == &output_name)
+                    .find(|(name, _, _, _)| name == output_name)
                     .map(|(_, path, _, _)| path.clone())
                     .ok_or_else(|| stored_load_error(StoredLoadFailurePhase::SelectedOutput))?;
                 if !request.input_sources.contains(&output_path) {
@@ -230,7 +313,7 @@ impl BuildRequest {
         request
             .validate_for_execution()
             .map_err(|_| stored_load_error(StoredLoadFailurePhase::FinalValidation))?;
-        Ok(request)
+        Ok((request, stored.input_derivations))
     }
 
     pub fn from_stored_derivation(

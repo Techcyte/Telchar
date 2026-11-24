@@ -70,8 +70,24 @@ pub struct VerifiedStoreExport {
     pub nar_size: u64,
 }
 
+pub trait TemporaryRoots {
+    fn retain(&mut self, path: &[u8]) -> io::Result<()>;
+}
+
+impl TemporaryRoots for GatewayStoreConnection {
+    fn retain(&mut self, path: &[u8]) -> io::Result<()> {
+        self.add_temporary_root(path)
+    }
+}
+
 pub trait StoreExportBackend: Send {
     fn store_uri(&self) -> &str;
+    fn temporary_roots(&self) -> io::Result<Box<dyn TemporaryRoots>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "temporary store roots are unavailable",
+        ))
+    }
     /// Stateless backends have no transport to discard. Stateful backends release it here.
     fn discard_connection(&mut self) {}
     fn build_paths_with_results(&mut self, _targets: &[Vec<u8>]) -> io::Result<()> {
@@ -177,6 +193,10 @@ impl GatewayStoreExportBackend {
 }
 
 impl StoreExportBackend for GatewayStoreExportBackend {
+    fn temporary_roots(&self) -> io::Result<Box<dyn TemporaryRoots>> {
+        Ok(Box::new(GatewayStoreConnection::connect(&self.endpoint)?))
+    }
+
     fn discard_connection(&mut self) {
         self.connection = None;
     }

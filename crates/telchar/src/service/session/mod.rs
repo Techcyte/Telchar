@@ -83,6 +83,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
 
     macro_rules! execute_admitted_build {
         ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $failure_target:expr, $write_success:expr $(,)?) => {{
+            'execution: {
             let admitted = $admitted;
             let request_started = $request_started;
             let build_mode = $build_mode;
@@ -111,7 +112,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         output_count = admitted.expected_outputs().len(),
                         "cached BuildDerivation outputs returned"
                     );
-                    continue;
+                    break 'execution true;
                 }
                 if let Err(error) = disk_reserve.admit_build(
                     disk_probe,
@@ -986,7 +987,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         )?;
                     }
                     crate::service::metrics::build_request_finished(request_started.elapsed(), "failed", Some("nix-build"));
-                    continue;
+                    break 'execution false;
                 }
                 let validation_started = std::time::Instant::now();
                 let output_paths = if result.gateway_validated() {
@@ -1283,7 +1284,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     status = ?result.status(),
                     "BuildDerivation execution completed"
                 );
-
+                true
+            }
         }};
     }
 
@@ -1504,8 +1506,33 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                let mut graph_roots = match store_export.temporary_roots() {
+                    Ok(roots) => roots,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
+                };
+                if graph_roots
+                    .retain(derivation_path.as_os_str().as_encoded_bytes())
+                    .is_err()
+                {
+                    return reject(
+                        &mut output,
+                        "gateway-store-retention",
+                        "gateway store retention failed",
+                    );
+                }
                 let admitted = match crate::service::activity::run("load-derivation", || {
-                    BuildRequest::load_stored(derivation_path, store_export, backend_targets)
+                    BuildRequest::load_stored_builds(
+                        derivation_path,
+                        store_export,
+                        graph_roots.as_mut(),
+                        backend_targets,
+                    )
                 }) {
                     Ok(admitted) => admitted,
                     Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
@@ -1545,23 +1572,65 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                for build in &admitted {
+                    for path in build
+                        .input_sources()
+                        .iter()
+                        .chain(build.expected_outputs().iter().map(|(_, path)| path))
+                    {
+                        if graph_roots.retain(path).is_err() {
+                            return reject(
+                                &mut output,
+                                "gateway-store-retention",
+                                "gateway store retention failed",
+                            );
+                        }
+                    }
+                }
                 let target = target.clone();
-                let requested_system = admitted.system().as_bytes().to_vec();
-                execute_admitted_build!(
-                    admitted,
-                    request_started,
-                    request.build_mode(),
-                    requested_system.as_slice(),
-                    build_audit,
-                    Some(target.as_slice()),
-                    |output, version, already_valid, _build: &BuildRequest| {
-                        nix_worker_protocol::write_build_paths_with_results_success_response(
-                            output,
-                            version,
-                            [(target.as_slice(), already_valid)],
-                        )
-                    },
-                );
+                let mut builds = admitted.into_iter().peekable();
+                while let Some(admitted) = builds.next() {
+                    let terminal = builds.peek().is_none();
+                    let requested_system = admitted.system().as_bytes().to_vec();
+                    let dependency_audit = (!terminal)
+                        .then(|| {
+                            audit.map(|audit| {
+                                audit.build(vec![
+                                    String::from_utf8_lossy(admitted.derivation_path())
+                                        .into_owned(),
+                                ])
+                            })
+                        })
+                        .flatten();
+                    let succeeded = execute_admitted_build!(
+                        admitted,
+                        request_started,
+                        request.build_mode(),
+                        requested_system.as_slice(),
+                        if terminal {
+                            build_audit.as_ref()
+                        } else {
+                            dependency_audit.as_ref()
+                        },
+                        Some(target.as_slice()),
+                        |output: &mut output::SessionOutput,
+                         version,
+                         already_valid,
+                         _build: &BuildRequest| {
+                            if terminal {
+                                nix_worker_protocol::write_build_paths_with_results_success_response(
+                                    output,
+                                    version,
+                                    [(target.as_slice(), already_valid)],
+                                )?;
+                            }
+                            Ok::<_, io::Error>(())
+                        },
+                    );
+                    if !succeeded {
+                        break;
+                    }
+                }
             }
             Ok(WorkerOperation::QueryPathInfo) => {
                 let request = match reader.complete_store_path_request() {

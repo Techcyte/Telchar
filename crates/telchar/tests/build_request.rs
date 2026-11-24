@@ -1,5 +1,6 @@
 //! Tests build request contracts and failure boundaries, including admits each system from the individual backend fleet.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ fn loads_classic_stored_derivation_into_build_request() {
 }
 
 #[test]
-fn stored_request_realizes_dependencies_in_gateway_store() {
+fn stored_request_loads_dependencies_without_realizing_outputs() {
     let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
         let output = std::process::Command::new("bash")
             .arg(concat!(
@@ -45,7 +46,7 @@ fn stored_request_realizes_dependencies_in_gateway_store() {
             .arg(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "stored_request_realizes_dependencies_in_gateway_store",
+                "stored_request_loads_dependencies_without_realizing_outputs",
                 "--test-threads=1",
             ])
             .output()
@@ -98,10 +99,7 @@ fn stored_request_realizes_dependencies_in_gateway_store() {
         .iter()
         .find(|path| path.ends_with(b"-telchar-stored-dependency"))
         .expect("dependency output is retained as a root input");
-    assert_eq!(
-        std::fs::read(std::str::from_utf8(dependency).unwrap()).unwrap(),
-        b"dependency"
-    );
+    assert!(!std::path::Path::new(std::str::from_utf8(dependency).unwrap()).exists());
     assert!(
         request.expected_outputs().iter().all(|(_, path)| {
             !std::path::Path::new(std::str::from_utf8(path).unwrap()).exists()
@@ -250,6 +248,14 @@ fn loads_selected_input_derivation_outputs() {
     struct Backend {
         nars: BTreeMap<PathBuf, Vec<u8>>,
         built: Vec<Vec<u8>>,
+        roots: std::sync::Arc<std::sync::Mutex<BTreeSet<Vec<u8>>>>,
+    }
+    struct Roots(std::sync::Arc<std::sync::Mutex<BTreeSet<Vec<u8>>>>);
+    impl telchar::store::export::TemporaryRoots for Roots {
+        fn retain(&mut self, path: &[u8]) -> io::Result<()> {
+            self.0.lock().unwrap().insert(path.to_vec());
+            Ok(())
+        }
     }
     impl StoreExportBackend for Backend {
         fn store_uri(&self) -> &str {
@@ -260,6 +266,15 @@ fn loads_selected_input_derivation_outputs() {
             Ok(())
         }
         fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
+            if !path.as_os_str().as_encoded_bytes().ends_with(b".drv") {
+                assert!(
+                    self.roots
+                        .lock()
+                        .unwrap()
+                        .contains(path.as_os_str().as_encoded_bytes()),
+                    "selected output must be rooted before validity query"
+                );
+            }
             let nar = self
                 .nars
                 .get(path)
@@ -299,15 +314,31 @@ fn loads_selected_input_derivation_outputs() {
             (dependency_path.clone(), regular_nar(dependency)),
         ]),
         built: Vec::new(),
+        roots: Default::default(),
     };
+    let mut roots = Roots(backend.roots.clone());
 
     let request =
         BuildRequest::load_stored(&root_path, &mut backend, &backends("x86_64-linux", &[]))
             .expect("stored derivation and selected dependency output load");
 
+    assert!(
+        backend.built.is_empty(),
+        "loading must not execute daemon builds"
+    );
+    let builds = BuildRequest::load_stored_builds(
+        &root_path,
+        &mut backend,
+        &mut roots,
+        &backends("x86_64-linux", &[]),
+    )
+    .expect("cold graph loads");
     assert_eq!(
-        backend.built,
-        vec![b"/nix/store/33333333333333333333333333333333-dependency.drv!out".to_vec()]
+        builds
+            .iter()
+            .map(|build| build.derivation_path())
+            .collect::<Vec<_>>(),
+        vec![dependency_path.as_os_str().as_encoded_bytes(), drv_path()]
     );
     assert!(
         request
@@ -315,10 +346,51 @@ fn loads_selected_input_derivation_outputs() {
             .iter()
             .any(|path| path.as_slice() == dependency_output)
     );
+    backend.nars.insert(
+        std::path::PathBuf::from(std::str::from_utf8(dependency_output).unwrap()),
+        regular_nar(b"dependency"),
+    );
+    let builds = BuildRequest::load_stored_builds(
+        &root_path,
+        &mut backend,
+        &mut roots,
+        &backends("x86_64-linux", &[]),
+    )
+    .unwrap();
+    assert_eq!(
+        builds.len(),
+        1,
+        "registered selected output skips dependency execution"
+    );
+    backend.nars.remove(std::path::Path::new(
+        std::str::from_utf8(dependency_output).unwrap(),
+    ));
+    let cyclic = std::str::from_utf8(dependency).unwrap().replacen(
+        "],[],[]",
+        &format!(
+            "],[(\"{}\",[\"out\"])],[]",
+            std::str::from_utf8(drv_path()).unwrap()
+        ),
+        1,
+    );
+    backend
+        .nars
+        .insert(dependency_path.clone(), regular_nar(cyclic.as_bytes()));
+    let error = BuildRequest::load_stored_builds(
+        &root_path,
+        &mut backend,
+        &mut roots,
+        &backends("x86_64-linux", &[]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        telchar::build::stored_load_failure_phase(&error),
+        Some(telchar::build::StoredLoadFailurePhase::DependencyParse)
+    );
 }
 
 #[test]
-fn classifies_dependency_realization_failure_without_backend_payload() {
+fn classifies_missing_dependency_without_backend_payload() {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use telchar::store::export::{StoreExportBackend, StoreExportRequest};
@@ -337,7 +409,9 @@ fn classifies_dependency_realization_failure_without_backend_payload() {
             ))
         }
         fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-            let nar = self.nars.get(path).expect("fixture path exists");
+            let nar = self.nars.get(path).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "sensitive fixture payload")
+            })?;
             Ok(RegisteredPathInfo {
                 path: path.to_path_buf(),
                 nar_hash: sha2::Sha256::digest(nar).into(),
@@ -364,17 +438,14 @@ fn classifies_dependency_realization_failure_without_backend_payload() {
     };
 
     let error = BuildRequest::load_stored(&root_path, &mut backend, &backends("x86_64-linux", &[]))
-        .expect_err("dependency realization fails");
+        .expect_err("dependency export fails");
 
     assert_eq!(
         telchar::build::stored_load_failure_phase(&error),
-        Some(telchar::build::StoredLoadFailurePhase::DependencyRealization)
+        Some(telchar::build::StoredLoadFailurePhase::DependencyExport)
     );
-    assert_eq!(
-        telchar::build::stored_load_dependency_phase(&error),
-        Some(nix_worker_protocol::BuildPathsFailurePhase::Target)
-    );
-    assert!(!error.to_string().contains("Target"));
+    assert_eq!(telchar::build::stored_load_dependency_phase(&error), None);
+    assert!(!error.to_string().contains("sensitive fixture payload"));
 }
 
 #[test]

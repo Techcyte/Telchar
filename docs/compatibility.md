@@ -54,8 +54,15 @@ host alias or destination.
 `operation_dispatch::validation::multiple_direct_store_targets_explain_daemon_offload_mode`
 checks the framed rejection and offload guidance. This does not qualify
 multi-target direct-store builds, macOS clients, or Lix 2.96. A single target can
-still require dependency builds; target-count validation alone does not establish
-that its graph is supported.
+still require dependency builds. Telchar loads a bounded dependency-first graph
+and executes missing prerequisites through the same admission, coalescing, backend
+routing and durable recovery path as individual builds. No parent execution slot
+is held while prerequisites run, and the gateway daemon is not asked to build the
+graph. Loading is limited to 1,024 scheduled derivations, depth 128 and 64 MiB of
+exported derivation text. Only classic input-addressed and fixed-output
+derivations are supported. The `nixos-direct-store-dependencies` contract uses
+separate x86 gateway/builder stores and ARM platform labels with x86 executables;
+it qualifies routing, not native ARM execution.
 
 ## Gateway Nix daemon
 

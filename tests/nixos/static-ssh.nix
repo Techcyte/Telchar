@@ -88,6 +88,7 @@ let
   };
 
   staticSshGatewayModule =
+    { builderSystem ? pkgs.stdenv.hostPlatform.system }:
     { ... }:
     {
       imports = [ restrictedIngressGatewayModule ];
@@ -98,7 +99,7 @@ let
       ];
       environment.etc."telchar/telchar.toml".text = ''
         [[backends.ssh]]
-        system = "${pkgs.stdenv.hostPlatform.system}"
+        system = "${builderSystem}"
         maximum_concurrent_builds = 1
         ssh_user = "telchar-builder"
         identity_file = "/var/lib/telchar-static-ssh/identity"
@@ -160,13 +161,17 @@ in
     {
       name,
       testScript ? "",
+      builderSystem ? pkgs.stdenv.hostPlatform.system,
     }:
     pkgs.testers.nixosTest {
       inherit name;
       nodes = {
         stock-client = restrictedIngressClientModule;
-        gateway = staticSshGatewayModule;
-        builder = staticSshBuilderModule { };
+        gateway = staticSshGatewayModule { inherit builderSystem; };
+        builder = { ... }: {
+          imports = [ (staticSshBuilderModule { }) ];
+          nix.settings.extra-platforms = [ builderSystem ];
+        };
       };
       testScript = ''
         start_all()

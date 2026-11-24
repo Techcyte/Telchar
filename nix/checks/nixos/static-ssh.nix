@@ -60,6 +60,71 @@
         gateway.succeed("nix-store --verify-path '" + output_path + "'")
       '';
     };
+  nixos-direct-store-dependencies =
+    let
+      harness = import ../../../tests/nixos/lib.nix {
+        inherit pkgs telchar;
+      };
+      derivations = pkgs.writeText "telchar-direct-store-dependencies.nix" ''
+        { name ? "direct", fail ? false }:
+        let
+          make = suffix: inputs: command: derivation ({
+            name = "telchar-''${name}-''${suffix}";
+            system = "aarch64-linux";
+            builder = builtins.storePath "${pkgs.runtimeShell}";
+            args = [ "-c" command ];
+          } // inputs);
+          leaf = make "leaf" {} (if fail then "exit 7" else "printf leaf > $out");
+          middle = make "middle" { inherit leaf; } "read value < $leaf; printf '%s-middle' $value > $out";
+        in make "root" { inherit leaf middle; } "read value < $middle; printf '%s-root' $value > $out"
+      '';
+    in
+    harness.mkStaticSshBuildTest {
+      name = "telchar-nixos-direct-store-dependencies";
+      # The builder accepts an ARM platform label using x86 executables.
+      builderSystem = "aarch64-linux";
+      testScript = ''
+        import shlex
+        ssh = "HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' "
+        store = "ssh-ng://telchar-ingress@gateway"
+        nix = ssh + "timeout 90 nix --extra-experimental-features nix-command --option substituters \"\" "
+        roots = {}
+        for mode in ["direct", "builders", "failed"]:
+            drv = stock_client.succeed("nix-instantiate ${derivations} --argstr name " + mode + " --arg fail " + ("true" if mode == "failed" else "false")).strip()
+            roots[mode] = drv
+            graph = stock_client.succeed("nix-store -qR " + shlex.quote(drv)).splitlines()
+            drvs = [path for path in graph if path.endswith(".drv")]
+            assert len(drvs) == 3, drvs
+            outputs = {path: stock_client.succeed("nix-store -q --outputs " + shlex.quote(path)).strip() for path in drvs}
+            for output in outputs.values():
+                gateway.fail("nix-store --check-validity " + shlex.quote(output))
+                builder.fail("nix-store --check-validity " + shlex.quote(output))
+            if mode != "builders":
+                stock_client.succeed(nix + "copy --to " + store + " " + shlex.quote(drv))
+            command = nix + "build --no-link --print-out-paths "
+            if mode == "builders":
+                command += "--max-jobs 0 --builders '" + store + " aarch64-linux' "
+            else:
+                command += "--store " + store + " "
+            command += shlex.quote(drv + "^*") + " > /tmp/" + mode + ".out 2>/tmp/" + mode + ".err"
+            if mode == "failed":
+                stock_client.fail(command)
+                for path, output in outputs.items():
+                    gateway.fail("nix-store --check-validity " + shlex.quote(output))
+                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_builds where derivation_path like '%telchar-failed-leaf.drv' and state = 'failed'\" | grep -qx 1")
+                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_builds where derivation_path like '%telchar-failed-root.drv' or derivation_path like '%telchar-failed-middle.drv'\" | grep -qx 0")
+            else:
+                stock_client.succeed(command + " || { cat /tmp/" + mode + ".err >&2; exit 1; }")
+                root = outputs[drv]
+                gateway.succeed("test \"$(cat " + shlex.quote(root) + ")\" = leaf-middle-root")
+                for path, output in outputs.items():
+                    gateway.succeed("nix-store --verify-path " + shlex.quote(output))
+                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts join shared_builds using (derivation_path) where derivation_path like '%telchar-" + mode + "-%' and state = 'succeeded' and shared_builds.backend_kind = 'static-ssh'\" | grep -qx 3")
+        gateway.succeed("systemctl restart telchar-daemon.service")
+        gateway.wait_for_unit("telchar-daemon.service")
+        stock_client.succeed(nix + "build --store " + store + " --no-link " + shlex.quote(roots["direct"] + "^*") + " >/tmp/reuse.out 2>/tmp/reuse.err || { cat /tmp/reuse.err >&2; exit 1; }")
+      '';
+    };
   nixos-static-ssh-gateway =
     let
       harness = import ../../../tests/nixos/lib.nix {

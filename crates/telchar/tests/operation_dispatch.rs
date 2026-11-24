@@ -53,6 +53,8 @@ mod queueing;
 mod request_state;
 #[path = "operation_dispatch/store_transfer.rs"]
 mod store_transfer;
+#[path = "operation_dispatch/stored_dependencies.rs"]
+mod stored_dependencies;
 #[path = "operation_dispatch/validation.rs"]
 mod validation;
 

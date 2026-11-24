@@ -120,9 +120,7 @@ nix build .#default \
 
 Replace `.#default` with your package attribute and `x86_64-linux` with a system supported by the gateway. Choose the builder's remote slot count and the store's `max-connections` value for the deployment's capacity; they are separate settings and commonly use the same bound. `--max-jobs 0` prevents local builds but still allows the client to fetch cached outputs. For persistent configuration and builder-field details, see the [Nix remote-build guide](https://nix.dev/manual/nix/stable/advanced-topics/distributed-builds).
 
-### Direct-store dependency limitation
-
-Use a local Nix daemon with `--builders` for cross-architecture builds. Unlike distributed-builder requests, `nix build --store ssh-ng://telchar@…` asks the gateway to realize the target's dependency graph. Missing dependency outputs are realized through the gateway's local Nix daemon, not scheduled through Telchar's configured backends. An x86_64 gateway can therefore fail to realize cold aarch64 dependencies even when an aarch64 backend is available. Pre-existing dependency outputs can make the same direct-store request succeed; that does not establish cold cross-architecture support.
+Direct `nix build --store ssh-ng://…` accepts one target in normal build mode. Cold dependencies are scheduled through Telchar's configured backends before their consumers; the gateway daemon need not execute every requested architecture. Dependency loading is bounded to 1,024 scheduled derivations, depth 128, and 64 MiB of exported derivation text. For multiple installables, use the local daemon with `--builders` as above. See [direct-store boundaries](docs/compatibility.md#direct-store-target-boundary).
 
 Keep the gateway store separate from the requesting client's store. **Execution workers must not delegate their Nix builds back to the same Telchar gateway**: a worker can otherwise join its own in-progress build and wait on itself. In particular, inspect the host daemon's remote-builder configuration when a Nomad worker mounts its Nix daemon socket.
 
