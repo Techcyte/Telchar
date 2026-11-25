@@ -89,7 +89,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             let build_mode = $build_mode;
             let requested_system = $requested_system;
             let build_audit = $build_audit;
-                if return_cached_outputs(
+                let cached = return_cached_outputs(
                     &admitted,
                     database,
                     store_query,
@@ -98,7 +98,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     output_retention.duration(),
                     audit_subject,
                     quota_subject,
-                )? {
+                );
+                let cached = match cached {
+                    Ok(cached) => cached,
+                    Err(error) => {
+                        tracing::warn!(event = "worker.build.cache_rejected", derivation_path = %String::from_utf8_lossy(admitted.derivation_path()), diagnostic = %error, "cached build request rejected");
+                        return reject(&mut output, "cached-build-rejected", "cached build metadata could not be validated");
+                    }
+                };
+                if cached {
                     if let Some(build_audit) = build_audit.as_ref() {
                         build_audit.completed("already-valid", admitted.expected_outputs().iter()
                             .map(|(_, path)| String::from_utf8_lossy(path).into_owned()).collect());
@@ -1364,6 +1372,16 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         String::from_utf8_lossy(request.drv_path())
                     )])
                 });
+                let build_span = tracing::info_span!(
+                    "worker.build",
+                    derivation_path = %String::from_utf8_lossy(request.drv_path()),
+                );
+                let _build_span = build_span.enter();
+                tracing::info!(
+                    event = "worker.build.requested",
+                    derivation_path = %String::from_utf8_lossy(request.drv_path()),
+                    "worker derivation build requested"
+                );
                 let admitted = match crate::service::activity::run("admission", || {
                     BuildRequest::from_worker_request(&request, backend_targets)
                 }) {
@@ -1548,6 +1566,16 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "gateway store retention failed",
                     );
                 }
+                let build_span = tracing::info_span!(
+                    "worker.build",
+                    derivation_path = %derivation_path.display(),
+                );
+                let _build_span = build_span.enter();
+                tracing::info!(
+                    event = "worker.build.requested",
+                    derivation_path = %derivation_path.display(),
+                    "stored derivation build requested"
+                );
                 let admitted = match crate::service::activity::run("load-derivation", || {
                     BuildRequest::load_stored_builds(
                         derivation_path,
@@ -2249,6 +2277,13 @@ fn return_cached_outputs(
     if build.request_digest != request.shared_build_digest()
         || build.build_request.as_ref() != Some(request)
     {
+        tracing::warn!(
+            event = "worker.build.cache_identity_mismatch",
+            derivation_path,
+            digest_matches = build.request_digest == request.shared_build_digest(),
+            request_matches = build.build_request.as_ref() == Some(request),
+            "cached build request identity mismatch"
+        );
         return Err(io::Error::other("cached build request identity mismatch"));
     }
     let result = durable_shared_build_result(&build)?;

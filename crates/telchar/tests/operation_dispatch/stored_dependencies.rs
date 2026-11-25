@@ -31,6 +31,95 @@ fn stored_dependency_build(fail: bool, collect: bool) {
     stored_dependency_request(fail, collect, 46);
 }
 
+#[test]
+fn conflicting_cached_request_returns_protocol_error() {
+    let instantiated = Command::new("nix-instantiate")
+        .args(["--store", "local", "--expr", r#"let dependency = derivation { name = "telchar-cross-operation-input"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "printf input > $out" ]; }; in derivation { name = "telchar-cross-operation-cache"; system = builtins.currentSystem; builder = "/bin/sh"; inherit dependency; args = [ "-c" "printf cached > $out" ]; }"#])
+        .output()
+        .unwrap();
+    assert!(instantiated.status.success(), "{instantiated:?}");
+    let drv = String::from_utf8(instantiated.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let endpoint =
+        telchar::store::GatewayStoreEndpoint::parse("unix:///nix/var/nix/daemon-socket/socket")
+            .unwrap();
+    let mut export = telchar::store::export::GatewayStoreExportBackend::new(endpoint);
+    let dependencies = Command::new("nix-store")
+        .args(["-q", "--references", &drv])
+        .output()
+        .unwrap();
+    assert!(dependencies.status.success(), "{dependencies:?}");
+    let dependency_paths = String::from_utf8(dependencies.stdout).unwrap();
+    for path in dependency_paths
+        .lines()
+        .filter(|path| path.ends_with(".drv"))
+    {
+        let built = Command::new("nix-store")
+            .args(["--realise", path, "--builders", ""])
+            .output()
+            .unwrap();
+        assert!(built.status.success(), "{built:?}");
+    }
+    let target = telchar::backend::BackendTarget::new(
+        "local",
+        telchar::backend::BackendKind::Local,
+        "x86_64-linux",
+        [] as [&str; 0],
+    )
+    .unwrap();
+    let request = telchar::build::BuildRequest::load_stored(
+        std::path::Path::new(&drv),
+        &mut export,
+        &[target],
+    )
+    .unwrap();
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///nix/var/nix/daemon-socket/socket",
+        [] as [(&str, String); 0],
+    );
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    super::build_failure::send_failure_build(&mut input, &request, "", false);
+    read_build_success(&mut output).unwrap();
+    let mut persisted = serde_json::to_value(&request).unwrap();
+    for path in dependency_paths
+        .lines()
+        .filter(|path| path.ends_with(".drv"))
+    {
+        persisted["input_sources"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(path.as_bytes()).unwrap());
+    }
+    let persisted: telchar::build::BuildRequest = serde_json::from_value(persisted).unwrap();
+    let mut database = fixture.database.connect();
+    database.execute("UPDATE shared_builds SET build_request=$1::text::jsonb, request_digest=$2 WHERE derivation_path=$3", &[&serde_json::to_string(&persisted).unwrap(), &&persisted.shared_build_digest()[..], &drv]).unwrap();
+    super::build_failure::send_failure_build(&mut input, &request, &format!("{drv}!out"), true);
+    let mut frame = [0; 8];
+    let response = output.read_exact(&mut frame);
+    if let Err(error) = response {
+        drop(input);
+        drop(output);
+        let diagnostic = fixture.finish();
+        panic!("cached response failed: {error}; daemon diagnostic: {diagnostic}");
+    }
+    assert_eq!(u64::from_le_bytes(frame), nix_worker_protocol::STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "cached build metadata could not be validated"
+    );
+    drop(input);
+    drop(output);
+    assert!(fixture.frontend.wait().unwrap().success());
+    fixture.finish();
+}
+
 fn stored_dependency_request(fail: bool, collect: bool, operation: u64) {
     let root = tempfile::tempdir().unwrap();
     let expression = r#"

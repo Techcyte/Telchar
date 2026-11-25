@@ -1023,6 +1023,15 @@ fn retry_after_status(status_code: u16, expected_ordinal: i32, database_failure:
 
 #[test]
 fn configured_backend_retries_missing_nomad_execution_with_distinct_identity() {
+    retry_unavailable_execution(false);
+}
+
+#[test]
+fn configured_backend_retries_lost_nomad_execution_with_distinct_identity() {
+    retry_unavailable_execution(true);
+}
+
+fn retry_unavailable_execution(lost: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -1052,7 +1061,29 @@ fn configured_backend_retries_missing_nomad_execution_with_distinct_identity() {
         let (mut missing_status, _) = listener.accept().expect("missing status accepts");
         let request = read_http_request(&mut missing_status);
         assert!(request.starts_with(&format!("GET /v1/job/{served_first}?")));
-        write_json_response(&mut missing_status, 404, r#"{}"#);
+        if lost {
+            {
+                write_json_response(
+                    &mut missing_status,
+                    200,
+                    &format!(
+                        r#"{{"ID":"{served_first}","Namespace":"telchar","Type":"batch","Stop":false,"Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+                    ),
+                );
+                let (mut allocations, _) = listener.accept().unwrap();
+                assert!(read_http_request(&mut allocations).contains("/allocations"));
+                write_json_response(
+                    &mut allocations,
+                    200,
+                    r#"[{"ID":"allocation-1","ClientStatus":"lost"}]"#,
+                );
+            }
+            let (mut stop, _) = listener.accept().unwrap();
+            assert!(read_http_request(&mut stop).starts_with("DELETE "));
+            write_json_response(&mut stop, 503, r#"{}"#);
+        } else {
+            write_json_response(&mut missing_status, 404, r#"{}"#);
+        }
 
         let (mut second_submit, _) = listener.accept().expect("second submit accepts");
         let request = read_http_request_with_body(&mut second_submit);

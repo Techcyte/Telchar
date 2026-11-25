@@ -811,6 +811,24 @@ fn predecessor_callback_cannot_complete_successor_attempt() {
         Duration::from_secs(3_600),
     )
     .expect("successor completes");
+    let terminal = telchar::persistence::read_shared_build(fixture.url(), derivation).unwrap();
+    for attempt in [predecessor.attempt_id, successor_attempt.attempt_id] {
+        assert!(
+            telchar::persistence::complete_shared_build_execution(
+                fixture.url(),
+                derivation,
+                attempt,
+                Some("nomad-transfer-failure"),
+                &serde_json::json!({}),
+                Duration::from_secs(3_600),
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), derivation).unwrap(),
+        terminal
+    );
     fixture.connect().execute(
         "UPDATE shared_builds SET created_at = created_at - interval '2 hours', started_at = started_at - interval '2 hours', collecting_at = collecting_at - interval '2 hours', completed_at = completed_at - interval '2 hours', expires_at = expires_at - interval '2 hours' WHERE derivation_path = $1",
         &[&derivation],

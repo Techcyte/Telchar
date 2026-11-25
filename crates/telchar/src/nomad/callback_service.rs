@@ -327,9 +327,14 @@ pub fn serve_connection(
     };
     let body = socket.read_binary()?;
     let authentication = decode_authentication(&body, callback.maximum_body_bytes())?;
-    let execution = resolver
-        .resolve(&authentication)?
-        .ok_or_else(|| io::Error::other("Nomad callback execution is unavailable"))?;
+    let Some(execution) = resolver.resolve(&authentication)? else {
+        tracing::info!(
+            event = "nomad.callback.ignored",
+            job_id = authentication.job_id,
+            "Nomad callback has no active execution"
+        );
+        return Ok(());
+    };
     let backend = backends
         .iter()
         .find(|backend| backend.target().name() == authentication.backend)

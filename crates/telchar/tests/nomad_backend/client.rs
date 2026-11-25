@@ -232,6 +232,7 @@ fn maps_allocation_terminal_states_and_missing_jobs() {
         ("running", NomadExecutionState::Placed),
         ("complete", NomadExecutionState::Succeeded),
         ("failed", NomadExecutionState::Failed),
+        ("lost", NomadExecutionState::Failed),
     ] {
         let root = fixture_root();
         let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");

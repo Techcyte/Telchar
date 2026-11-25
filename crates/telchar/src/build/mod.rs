@@ -303,7 +303,10 @@ impl BuildRequest {
             &contents,
             backends,
         )
-        .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootAdmission))?;
+        .map_err(|error| {
+            tracing::warn!(event = "gateway.stored_derivation.rejected", derivation_path = %derivation_path.display(), diagnostic = %error, "stored derivation admission failed");
+            stored_load_error(StoredLoadFailurePhase::RootAdmission)
+        })?;
         let stored = derivation::parse(&contents)
             .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootParse))?;
         request.input_sources = stored.input_sources;
@@ -358,9 +361,12 @@ impl BuildRequest {
             || !backends
                 .iter()
                 .any(|backend| backend.supports(system, &required_features))
-            || environment_value(&stored.environment, b"system") != Some(stored.system.as_slice())
-            || environment_value(&stored.environment, b"builder") != Some(stored.builder.as_slice())
-            || environment_value(&stored.environment, b"name") != derivation_name(derivation_path)
+            || environment_value(&stored.environment, b"system")
+                .is_some_and(|value| value != stored.system.as_slice())
+            || environment_value(&stored.environment, b"builder")
+                .is_some_and(|value| value != stored.builder.as_slice())
+            || environment_value(&stored.environment, b"name")
+                .is_some_and(|value| Some(value) != derivation_name(derivation_path))
         {
             return Err(unsupported_request());
         }

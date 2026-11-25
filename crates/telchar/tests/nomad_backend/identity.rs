@@ -101,7 +101,7 @@ fn monitor_job(stopped: bool, terminal: bool, cleanup: bool) {
                 if terminal { "failed" } else { "running" }
             ),
         );
-        if !cleanup {
+        if !cleanup && !stopped {
             let (mut stop, _) = listener.accept().expect("non-purging stop accepts");
             let request = read_http_request(&mut stop);
             assert!(request.starts_with(&format!(

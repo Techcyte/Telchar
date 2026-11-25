@@ -13,6 +13,37 @@ use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
 
 #[test]
+fn admits_stored_request_with_store_builder() {
+    let builder = "/nix/store/jnyfsf2mp08d1xyz2m72ic2vz2kcx0sd-bash-5.3p9/bin/bash";
+    let path = b"/nix/store/rqi0f0qb26ipr9px62j1fcm6b9pjmlh8-tc-2026.11.2+main--366e6c92.drv";
+    let contents = format!(
+        "Derive([(\"out\",\"/nix/store/svad70p4aqq5xg43mj0790a85blv5fa9-tc-2026.11.2+main--366e6c92\",\"\",\"\")],[],[],\"x86_64-linux\",\"{builder}\",[],[(\"builder\",\"{builder}\"),(\"name\",\"tc-2026.11.2+main--366e6c92\"),(\"out\",\"/nix/store/svad70p4aqq5xg43mj0790a85blv5fa9-tc-2026.11.2+main--366e6c92\"),(\"system\",\"x86_64-linux\")])"
+    );
+    let contents = contents
+        .replace(&format!("(\"builder\",\"{builder}\"),"), "")
+        .replace("(\"name\",\"tc-2026.11.2+main--366e6c92\"),", "")
+        .replace(",(\"system\",\"x86_64-linux\")", "");
+    BuildRequest::from_stored_derivation(path, contents.as_bytes(), &backends("x86_64-linux", &[]))
+        .unwrap();
+    for (key, value) in [
+        ("system", "aarch64-linux"),
+        ("builder", "/bin/false"),
+        ("name", "different"),
+    ] {
+        let conflicting =
+            contents.replace("[(\"out\",", &format!("[(\"{key}\",\"{value}\"),(\"out\","));
+        assert!(
+            BuildRequest::from_stored_derivation(
+                path,
+                conflicting.as_bytes(),
+                &backends("x86_64-linux", &[])
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn loads_classic_stored_derivation_into_build_request() {
     let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/bin/sh",["-c","printf value > \"$out\""],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let request = BuildRequest::from_stored_derivation(

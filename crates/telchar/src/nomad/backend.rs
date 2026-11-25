@@ -130,6 +130,8 @@ pub enum NomadExecutionState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NomadExecutionStatus {
     cleanup_complete: bool,
+    stopped: bool,
+    lost: bool,
     state: NomadExecutionState,
     allocations: Vec<NomadAllocation>,
 }
@@ -371,7 +373,7 @@ impl NomadClient {
             request_deadline: Some(deadline.min(Instant::now() + self.config.cleanup_timeout())),
         };
         let status = cleanup.execution_status(job_id)?;
-        if !status.cleanup_complete {
+        if !status.cleanup_complete && !status.stopped {
             cleanup.stop_with_deadline(job_id)?;
         }
         Ok(status.cleanup_complete)
@@ -440,6 +442,8 @@ impl NomadClient {
             );
             return Ok(NomadExecutionStatus {
                 cleanup_complete: true,
+                stopped: true,
+                lost: false,
                 state: NomadExecutionState::Missing,
                 allocations: Vec::new(),
             });
@@ -487,7 +491,10 @@ impl NomadClient {
         )?;
         let cleanup_complete = job.stopped
             && allocations.iter().all(|allocation| {
-                matches!(allocation.client_status.as_str(), "complete" | "failed")
+                matches!(
+                    allocation.client_status.as_str(),
+                    "complete" | "failed" | "lost"
+                )
             });
         let current_allocations = allocations
             .iter()
@@ -497,7 +504,7 @@ impl NomadClient {
             NomadExecutionState::Pending
         } else if current_allocations
             .iter()
-            .any(|allocation| allocation.client_status == "failed")
+            .any(|allocation| matches!(allocation.client_status.as_str(), "failed" | "lost"))
         {
             NomadExecutionState::Failed
         } else if current_allocations
@@ -508,6 +515,9 @@ impl NomadClient {
         } else {
             NomadExecutionState::Placed
         };
+        let lost = current_allocations
+            .iter()
+            .any(|allocation| allocation.client_status == "lost");
         let allocations = current_allocations
             .into_iter()
             .map(|allocation| NomadAllocation {
@@ -528,6 +538,8 @@ impl NomadClient {
         );
         Ok(NomadExecutionStatus {
             cleanup_complete,
+            stopped: job.stopped,
+            lost,
             state,
             allocations,
         })
@@ -954,7 +966,13 @@ impl NomadClient {
                         NomadExecutionState::Failed | NomadExecutionState::Missing => {
                             let cleanup_deadline =
                                 deadline.min(Instant::now() + self.config.cleanup_timeout());
-                            if !status.cleanup_complete {
+                            if status.lost {
+                                if !status.stopped
+                                    && let Err(error) = self.stop_with_deadline(submission.job_id())
+                                {
+                                    tracing::warn!(event = "nomad.lost.stop_failed", job_id = submission.job_id(), diagnostic = %error, "lost execution stop could not be confirmed");
+                                }
+                            } else if !status.cleanup_complete {
                                 self.await_execution_cleanup(submission.job_id(), cleanup_deadline)
                                     .map_err(NomadAttemptFailure::Terminal)?;
                             }
