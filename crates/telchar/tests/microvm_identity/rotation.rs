@@ -79,6 +79,7 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (completed, completion) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
         let until = std::time::Instant::now() + Duration::from_secs(5);
         let mut requests = Vec::new();
@@ -86,6 +87,9 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
             let mut socket = match listener.accept() {
                 Ok((socket, _)) => socket,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if completion.try_recv().is_ok() {
+                        break;
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -206,6 +210,7 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
         started.elapsed() < Duration::from_secs(2),
         "refresh bounded"
     );
+    let _ = completed.send(());
     if fault != "none" {
         assert!(result.is_err(), "unusable source must fail closed");
         let requests = server.join().unwrap();

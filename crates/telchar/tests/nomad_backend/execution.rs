@@ -355,7 +355,9 @@ fn stalled_submission_obeys_execution_deadline_and_retains_obligation() {
             }
         };
         assert!(read_http_request_with_body(&mut request).contains(&job));
-        thread::sleep(Duration::from_secs(2));
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("submission finishes while HTTP response is withheld");
         true
     });
     let client = NomadClient::new(backend).unwrap();
@@ -364,8 +366,7 @@ fn stalled_submission_obeys_execution_deadline_and_retains_obligation() {
         telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
         _ => panic!("build leads"),
     };
-    let execution =
-        BuildExecution::new("request-1", &admitted, Duration::from_millis(100)).unwrap();
+    let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(1)).unwrap();
     let started = std::time::Instant::now();
     let result = client.execute(
         database.url(),
@@ -383,10 +384,14 @@ fn stalled_submission_obeys_execution_deadline_and_retains_obligation() {
         submitted,
         "execution returned before HTTP submission: {result:?}; elapsed={elapsed:?}"
     );
-    assert!(result.is_err());
+    let error = result.unwrap_err();
     assert!(
-        elapsed < Duration::from_secs(1),
-        "submission exceeded execution budget: {elapsed:?}"
+        format!("{error:?}").contains("TimedOut"),
+        "submission must time out: {error:?}"
+    );
+    assert!(
+        elapsed >= execution.timeout() && elapsed < Duration::from_secs(2),
+        "submission did not honor execution budget: {elapsed:?}"
     );
     assert_eq!(
         telchar::persistence::read_nomad_execution_obligations(database.url())
