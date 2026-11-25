@@ -10,7 +10,7 @@ use telchar::service::transfer_limits::{TransferBudget, TransferLimits};
 use telchar::store::export::{
     GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
     export_verified_nar, export_verified_nar_with_limits, load_stored_derivation,
-    validate_store_output,
+    validate_store_output, validate_store_output_content,
 };
 use telchar::store::promotion::RegisteredPathInfo;
 
@@ -148,6 +148,71 @@ fn validates_exact_output_path_against_registered_metadata() {
             path: PATH.into(),
         }]
     );
+}
+
+#[test]
+fn verifies_fixed_output_without_address_metadata() {
+    let contents = b"";
+    let nar = regular_nar(contents);
+    let mut metadata = registered_path_info();
+    metadata.nar_hash = sha2::Sha256::digest(&nar).into();
+    metadata.nar_size = nar.len() as u64;
+    metadata.content_address = None;
+    let mut backend = RecordingExportBackend::successful(metadata, nar);
+    telchar::store::export::validate_store_output_content(
+        Path::new(PATH),
+        Some("fixed:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73"),
+        &mut backend,
+    )
+    .expect("empty file hash verifies without address metadata");
+}
+
+#[test]
+fn rejects_fixed_output_with_wrong_content_without_address_metadata() {
+    let mut backend =
+        RecordingExportBackend::successful(registered_path_info(), regular_nar(CONTENT));
+    let error = telchar::store::export::validate_store_output_content(
+        Path::new(PATH),
+        Some("fixed:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73"),
+        &mut backend,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "build output content address mismatch");
+}
+
+#[test]
+fn verifies_flat_content_across_export_chunks() {
+    let mut backend =
+        RecordingExportBackend::successful(registered_path_info(), regular_nar(CONTENT));
+    backend.chunk_size = 7;
+    validate_store_output_content(
+        Path::new(PATH),
+        Some("fixed:sha256:0vsjq5dgdjaafm6fpylzcaknxsfzwczaqcw37gsghrl5adrrakwq"),
+        &mut backend,
+    )
+    .unwrap();
+}
+
+#[test]
+fn verifies_recursive_fixed_output_without_address_metadata() {
+    let mut backend =
+        RecordingExportBackend::successful(registered_path_info(), regular_nar(CONTENT));
+    let hash = "fixed:r:sha256:1qb8zxkj43al9ar8nykvg1fkzbwfqf324y53rgmhb1hn5bqy4avc";
+    validate_store_output_content(Path::new(PATH), Some(hash), &mut backend).unwrap();
+}
+
+#[test]
+fn rejects_conflicting_fixed_output_address_metadata() {
+    let mut metadata = registered_path_info();
+    metadata.content_address = Some("fixed:sha256:conflicting".into());
+    let mut backend = RecordingExportBackend::successful(metadata, regular_nar(CONTENT));
+    let error = validate_store_output_content(
+        Path::new(PATH),
+        Some("fixed:r:sha256:1qb8zxkj43al9ar8nykvg1fkzbwfqf324y53rgmhb1hn5bqy4avc"),
+        &mut backend,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "build output content address mismatch");
 }
 
 #[test]

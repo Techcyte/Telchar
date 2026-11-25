@@ -608,6 +608,50 @@ pub fn validate_store_output(
     })
 }
 
+pub fn validate_store_output_content(
+    path: &Path,
+    expected: Option<&str>,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+) -> io::Result<RegisteredPathInfo> {
+    let (verified, contents) = verify_exported_nar_content(
+        path,
+        &mut io::sink(),
+        backend,
+        expected.is_some_and(|address| address.starts_with("fixed:sha256:")),
+    )
+    .inspect_err(|_| backend.discard_connection())?;
+    tracing::info!(
+        event = "gateway.output.validated",
+        nar_bytes = verified.nar_size,
+        "gateway output NAR validated"
+    );
+    let metadata = verified.metadata;
+    if metadata.content_address.as_deref() == expected {
+        return Ok(metadata);
+    }
+    if metadata.content_address.is_none() {
+        let hash = match expected {
+            Some(address) if address.starts_with("fixed:r:sha256:") => Some((
+                address.trim_start_matches("fixed:r:sha256:"),
+                metadata.nar_hash,
+            )),
+            Some(address) if address.starts_with("fixed:sha256:") => {
+                contents.map(|hash| (address.trim_start_matches("fixed:sha256:"), hash))
+            }
+            _ => None,
+        };
+        if hash
+            .is_some_and(|(expected, actual)| expected == crate::build::encode_nix_base32(&actual))
+        {
+            return Ok(metadata);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "build output content address mismatch",
+    ))
+}
+
 fn verify_exported_nar(
     path: &Path,
     sink: &mut impl Write,
@@ -625,6 +669,15 @@ fn verify_exported_nar_inner(
     sink: &mut impl Write,
     backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<VerifiedStoreExport> {
+    verify_exported_nar_content(path, sink, backend, false).map(|(verified, _)| verified)
+}
+
+fn verify_exported_nar_content(
+    path: &Path,
+    sink: &mut impl Write,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+    flat: bool,
+) -> io::Result<(VerifiedStoreExport, Option<[u8; 32]>)> {
     let metadata = backend
         .query_path_info(path)
         .map_err(|error| io::Error::other(format!("path info query failed: {error}")))?;
@@ -647,10 +700,14 @@ fn verify_exported_nar_inner(
         offset: 0,
     };
     let mut writer = ExportWriter { sender, result };
-    let fingerprint = std::thread::scope(|scope| {
+    let (fingerprint, contents) = std::thread::scope(|scope| {
         let export =
             scope.spawn(move || backend.export_nar(&request, metadata.nar_size, &mut writer));
-        let parsed = stage_nar(reader, sink);
+        let parsed = if flat && metadata.content_address.is_none() {
+            crate::store::nar::hash_regular_nar(reader, sink).map(|(nar, hash)| (nar, Some(hash)))
+        } else {
+            stage_nar(reader, sink).map(|nar| (nar, None))
+        };
         let exported = export
             .join()
             .map_err(|_| io::Error::other("export backend thread panicked"))?;
@@ -674,11 +731,14 @@ fn verify_exported_nar_inner(
             "exported NAR size mismatch",
         ));
     }
-    Ok(VerifiedStoreExport {
-        metadata,
-        nar_hash: fingerprint.sha256,
-        nar_size: fingerprint.size,
-    })
+    Ok((
+        VerifiedStoreExport {
+            metadata,
+            nar_hash: fingerprint.sha256,
+            nar_size: fingerprint.size,
+        },
+        contents,
+    ))
 }
 
 struct ExportMessage {

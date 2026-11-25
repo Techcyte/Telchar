@@ -15,6 +15,7 @@ struct NarReader<R, W> {
     staging: W,
     hasher: Sha256,
     size: u64,
+    contents: Option<Sha256>,
 }
 
 impl<R: Read, W: Write> NarReader<R, W> {
@@ -24,6 +25,7 @@ impl<R: Read, W: Write> NarReader<R, W> {
             staging,
             hasher: Sha256::new(),
             size: 0,
+            contents: None,
         }
     }
 
@@ -82,6 +84,9 @@ impl<R: Read, W: Write> NarReader<R, W> {
         while remaining != 0 {
             let count = remaining.min(buffer.len() as u64) as usize;
             self.read_exact(&mut buffer[..count])?;
+            if let Some(contents) = &mut self.contents {
+                contents.update(&buffer[..count]);
+            }
             remaining -= count as u64;
         }
         self.read_padding(length)?;
@@ -251,6 +256,27 @@ pub fn read_regular_nar_with_fingerprint<R: Read>(
         return Err(invalid("trailing bytes after NAR"));
     }
     Ok((contents, nar.finish()))
+}
+
+pub(crate) fn hash_regular_nar<R: Read, W: Write>(
+    source: R,
+    staging: W,
+) -> io::Result<(NarFingerprint, [u8; 32])> {
+    let mut nar = NarReader::new(source, staging);
+    nar.string_equals(b"nix-archive-1")?;
+    nar.string_equals(b"(")?;
+    nar.string_equals(b"type")?;
+    nar.string_equals(b"regular")?;
+    nar.string_equals(b"contents")?;
+    nar.contents = Some(Sha256::new());
+    nar.copy_string()?;
+    let contents = nar.contents.take().unwrap().finalize().into();
+    nar.string_equals(b")")?;
+    let mut trailing = [0; 1];
+    if nar.source.read(&mut trailing)? != 0 {
+        return Err(invalid("trailing bytes after NAR"));
+    }
+    Ok((nar.finish(), contents))
 }
 
 pub fn stage_nar<R: Read, W: Write>(source: R, staging: W) -> io::Result<NarFingerprint> {

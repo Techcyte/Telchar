@@ -2603,13 +2603,11 @@ fn validate_build_outputs(
                 "build output authority mismatch",
             ));
         }
-        let metadata = crate::store::export::validate_store_output(Path::new(path), store_export)?;
-        if metadata.content_address.as_deref() != authority.expected_content_address().as_deref() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "build output content address mismatch",
-            ));
-        }
+        crate::store::export::validate_store_output_content(
+            Path::new(path),
+            authority.expected_content_address().as_deref(),
+            store_export,
+        )?;
     }
     Ok(paths)
 }
