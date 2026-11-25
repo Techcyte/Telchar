@@ -15,6 +15,7 @@ fn daemon_maintains_configured_detail_retention() {
         format!("lifecycle_detail_retention_days = 1\n{contents}"),
     )
     .unwrap();
+    command.env("TELCHAR_TEST_MAINTENANCE_INTERVAL_MS", "100");
     command.env(
         "TELCHAR_GATEWAY_STORE_URI",
         "unix:///nix/var/nix/daemon-socket/socket",
@@ -45,7 +46,7 @@ fn daemon_maintains_configured_detail_retention() {
     thread::sleep(Duration::from_secs(4));
     let mut daemon = command.spawn().unwrap();
     wait_for_socket(&socket, &mut daemon);
-    let deadline = Instant::now() + Duration::from_secs(75);
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(status) = daemon.try_wait().unwrap() {
             let output = daemon.wait_with_output().unwrap();

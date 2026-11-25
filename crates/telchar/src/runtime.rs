@@ -453,7 +453,21 @@ fn run_daemon() -> io::Result<()> {
         latest_migration_version = telchar::persistence::latest_migration_version(),
         "database migration started"
     );
-    let migration = match telchar::persistence::migrate(&database_url) {
+    let migration_result = if cfg!(debug_assertions)
+        && std::env::var_os("TELCHAR_TEST_MIGRATION_CONNECTION_TIMEOUT_MS").is_some()
+    {
+        match telchar::persistence::Database::connect(&database_url) {
+            Ok(database) => telchar::persistence::migrate(&database.for_request(
+                std::time::Instant::now()
+                    + duration_from_env("TELCHAR_TEST_MIGRATION_CONNECTION_TIMEOUT_MS", 120_000),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )),
+            Err(_) => telchar::persistence::migrate(&database_url),
+        }
+    } else {
+        telchar::persistence::migrate(&database_url)
+    };
+    let migration = match migration_result {
         Ok(outcome) => outcome,
         Err(error) => {
             tracing::error!(
@@ -788,9 +802,14 @@ fn run_daemon() -> io::Result<()> {
     let maintenance_backends = backends.clone();
     let detail_retention = config.lifecycle_detail_retention();
     let mut detail_cursor = telchar::persistence::LeaseDetailCursor::default();
+    let maintenance_interval = if cfg!(debug_assertions) {
+        duration_from_env("TELCHAR_TEST_MAINTENANCE_INTERVAL_MS", 60_000)
+    } else {
+        Duration::from_secs(60)
+    };
     let mut maintenance_service =
         telchar::service::daemon_services::MaintenanceService::start_with_ownership(
-            Duration::from_secs(60),
+            maintenance_interval,
             Arc::clone(&singleton_ownership),
             move || {
                 maintenance_backends

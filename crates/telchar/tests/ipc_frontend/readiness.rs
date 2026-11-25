@@ -173,6 +173,7 @@ fn daemon_rejects_empty_and_unreachable_database_before_socket_preparation() {
         let socket = root.join("daemon.sock");
         fs::write(&socket, b"preserve").expect("sentinel writes");
         let output = daemon_command(&socket, 1_000, true, database_url)
+            .env("TELCHAR_TEST_MIGRATION_CONNECTION_TIMEOUT_MS", "1000")
             .output()
             .expect("daemon command runs");
         let stderr = String::from_utf8_lossy(&output.stderr);

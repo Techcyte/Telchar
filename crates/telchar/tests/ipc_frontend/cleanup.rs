@@ -12,11 +12,14 @@ fn daemon_defers_root_cleanup_and_recovers_after_permission_repair() {
     fs::create_dir(&roots).unwrap();
     fs::set_permissions(&roots, fs::Permissions::from_mode(0o700)).unwrap();
     command
+        .env("TELCHAR_TEST_MAINTENANCE_INTERVAL_MS", "100")
         .env(
             "TELCHAR_GATEWAY_STORE_URI",
             "unix:///nix/var/nix/daemon-socket/socket",
         )
         .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &roots);
+    let diagnostic_path = root.join("daemon.stderr");
+    command.stderr(Stdio::from(fs::File::create(&diagnostic_path).unwrap()));
     let mut daemon = command.spawn().unwrap();
     wait_for_socket(&socket, &mut daemon);
     database.connect().batch_execute("INSERT INTO build_requests (request_id,derivation_path,system) VALUES ('cleanup-request','/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cleanup.drv','x86_64-linux'); INSERT INTO store_leases (lease_id,owner_kind,owner_id,store_path,purpose,state,nar_size,created_at,released_at) VALUES ('released','request','cleanup-request','/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output','input','released',1,now(),now())").unwrap();
@@ -26,7 +29,18 @@ fn daemon_defers_root_cleanup_and_recovers_after_permission_repair() {
     )
     .unwrap();
     fs::set_permissions(&roots, fs::Permissions::from_mode(0o500)).unwrap();
-    thread::sleep(Duration::from_secs(62));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let diagnostic = fs::read_to_string(&diagnostic_path).unwrap();
+        if diagnostic.contains("gateway.root_cleanup.deferred") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cleanup fault was not observed: {diagnostic}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
     let alive = daemon.try_wait().unwrap().is_none();
     let pending = telchar::persistence::read_store_lease(database.url(), "released")
         .unwrap()
@@ -57,7 +71,7 @@ fn daemon_defers_root_cleanup_and_recovers_after_permission_repair() {
         Err(std::io::Error::other("daemon exited during cleanup fault"))
     };
     fs::set_permissions(&roots, fs::Permissions::from_mode(0o700)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(70);
+    let deadline = Instant::now() + Duration::from_secs(5);
     let mut recovered = false;
     while alive && Instant::now() < deadline {
         if daemon.try_wait().unwrap().is_some() {
@@ -88,7 +102,8 @@ fn daemon_defers_root_cleanup_and_recovers_after_permission_repair() {
         daemon.kill().unwrap();
     }
     let output = daemon.wait_with_output().unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.stderr.is_empty());
+    let stderr = fs::read_to_string(&diagnostic_path).unwrap();
     let removed = fs::symlink_metadata(roots.join("released")).is_err();
     fs::remove_dir_all(root).unwrap();
     assert!(alive, "{stderr}");
