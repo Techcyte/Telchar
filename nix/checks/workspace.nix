@@ -79,7 +79,7 @@ pkgs.testers.nixosTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     # Nested private fixture stores need a bootstrap filesystem without overlays.
-    machine.succeed("mkdir -p /var/bootstrap-store && reg=$(grep -o 'regInfo=[^ ]*' /proc/cmdline) && grep '^/nix/store/' \"''${reg#regInfo=}\" | sort -u | while read -r path; do cp -a \"$path\" /var/bootstrap-store/ || exit; done; cp -a \"$(dirname \"''${reg#regInfo=}\")\" /var/bootstrap-store/", timeout=1200)
+    machine.succeed("set -o pipefail; mkdir -p /var/bootstrap-store && reg=$(grep -o 'regInfo=[^ ]*' /proc/cmdline) && grep '^/nix/store/' \"''${reg#regInfo=}\" | sort -u | xargs -r -P 4 -I '{}' cp -a '{}' /var/bootstrap-store/ && cp -a \"$(dirname \"''${reg#regInfo=}\")\" /var/bootstrap-store/", timeout=1200)
     machine.succeed("mount --bind /var/bootstrap-store /nix/store")
     machine.succeed("systemctl start register-nix-paths.service")
     machine.succeed("mkdir -p /var/workspace /build /nix/var/nix/daemon-socket && mount --bind /var/workspace /build && mkdir -p /build/source")
