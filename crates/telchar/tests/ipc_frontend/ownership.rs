@@ -151,6 +151,7 @@ fn daemon_keeps_lease_after_database_restart() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");
     let mut database = PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("fixture database migrates");
     let mut daemon = daemon_command(&socket, 1_000, false, database.url())
         .env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", "10")
         .spawn()

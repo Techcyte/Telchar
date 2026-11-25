@@ -62,11 +62,21 @@ fn microvm_identity_survives_database_restart() {
     assert_eq!(build.capabilities, build.backend_kind.capabilities());
 }
 
+fn bounded_database(url: &str) -> telchar::persistence::Database {
+    telchar::persistence::Database::connect(url)
+        .expect("database configuration parses")
+        .for_request(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+}
+
 #[test]
 fn verified_tls_database_migrates() {
     let fixture = PostgresFixture::start_tls();
 
-    let outcome = telchar::persistence::migrate(fixture.url()).expect("TLS migration succeeds");
+    let database = bounded_database(fixture.url());
+    let outcome = telchar::persistence::migrate(&database).expect("TLS migration succeeds");
 
     assert_eq!(
         outcome.resulting_version,
@@ -79,7 +89,8 @@ fn tls_database_with_wrong_hostname_fails_to_migrate() {
     let fixture = PostgresFixture::start_tls();
     let url = fixture.url().replacen("@localhost:", "@127.0.0.1:", 1);
 
-    let error = telchar::persistence::migrate(&url).expect_err("wrong hostname rejects");
+    let database = bounded_database(&url);
+    let error = telchar::persistence::migrate(&database).expect_err("wrong hostname rejects");
 
     assert_eq!(
         error.failure(),
@@ -96,7 +107,9 @@ fn untrusted_tls_database_fails_to_migrate() {
         .next()
         .expect("TLS URL has query parameters");
 
-    let error = telchar::persistence::migrate(url).expect_err("untrusted certificate rejects");
+    let database = bounded_database(url);
+    let error =
+        telchar::persistence::migrate(&database).expect_err("untrusted certificate rejects");
 
     assert_eq!(
         error.failure(),
@@ -116,8 +129,8 @@ fn malformed_tls_authority_fails_to_migrate() {
         authority.path().to_str().expect("UTF-8 path"),
     );
 
-    let error =
-        telchar::persistence::migrate(url.as_str()).expect_err("malformed authority rejects");
+    let database = bounded_database(url.as_str());
+    let error = telchar::persistence::migrate(&database).expect_err("malformed authority rejects");
 
     assert_eq!(
         error.failure(),
@@ -139,8 +152,8 @@ fn unrelated_tls_authority_fails_to_migrate() {
     url.set_query(Some("sslmode=verify-full"));
     url.query_pairs_mut().append_pair("sslrootcert", &authority);
 
-    let error =
-        telchar::persistence::migrate(url.as_str()).expect_err("unrelated authority rejects");
+    let database = bounded_database(url.as_str());
+    let error = telchar::persistence::migrate(&database).expect_err("unrelated authority rejects");
 
     assert_eq!(
         error.failure(),

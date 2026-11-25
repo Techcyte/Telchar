@@ -42,7 +42,7 @@ fn daemon_maintains_configured_detail_retention() {
     let stderr = String::from_utf8(predecessor.stderr).unwrap();
     assert!(!stderr.contains("maintenance failed"), "{stderr}");
     fs::remove_file(&socket).unwrap();
-    thread::sleep(Duration::from_secs(21));
+    thread::sleep(Duration::from_secs(4));
     let mut daemon = command.spawn().unwrap();
     wait_for_socket(&socket, &mut daemon);
     let deadline = Instant::now() + Duration::from_secs(75);
