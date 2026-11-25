@@ -89,8 +89,8 @@
         store = "ssh-ng://telchar-ingress@gateway"
         nix = ssh + "timeout 90 nix --extra-experimental-features nix-command --option substituters \"\" "
         roots = {}
-        for mode in ["direct", "builders", "failed"]:
-            drv = stock_client.succeed("nix-instantiate ${derivations} --argstr name " + mode + " --arg fail " + ("true" if mode == "failed" else "false")).strip()
+        for mode in ["direct", "build-paths", "builders", "failed", "build-paths-failed"]:
+            drv = stock_client.succeed("nix-instantiate ${derivations} --argstr name " + mode + " --arg fail " + ("true" if mode.endswith("failed") else "false")).strip()
             roots[mode] = drv
             graph = stock_client.succeed("nix-store -qR " + shlex.quote(drv)).splitlines()
             drvs = [path for path in graph if path.endswith(".drv")]
@@ -106,13 +106,17 @@
                 command += "--max-jobs 0 --builders '" + store + " aarch64-linux' "
             else:
                 command += "--store " + store + " "
-            command += shlex.quote(drv + "^*") + " > /tmp/" + mode + ".out 2>/tmp/" + mode + ".err"
-            if mode == "failed":
+            if mode.startswith("build-paths"):
+                command = ssh + "timeout 90 nix-store --option substituters \"\" --store " + store + " --realise " + shlex.quote(drv)
+            else:
+                command += shlex.quote(drv + "^*")
+            command += " > /tmp/" + mode + ".out 2>/tmp/" + mode + ".err"
+            if mode.endswith("failed"):
                 stock_client.fail(command)
                 for path, output in outputs.items():
                     gateway.fail("nix-store --check-validity " + shlex.quote(output))
-                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_builds where derivation_path like '%telchar-failed-leaf.drv' and state = 'failed'\" | grep -qx 1")
-                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_builds where derivation_path like '%telchar-failed-root.drv' or derivation_path like '%telchar-failed-middle.drv'\" | grep -qx 0")
+                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_builds where derivation_path like '%telchar-" + mode + "-leaf.drv' and state = 'failed'\" | grep -qx 1")
+                gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_builds where derivation_path like '%telchar-" + mode + "-root.drv' or derivation_path like '%telchar-" + mode + "-middle.drv'\" | grep -qx 0")
             else:
                 stock_client.succeed(command + " || { cat /tmp/" + mode + ".err >&2; exit 1; }")
                 root = outputs[drv]
@@ -120,6 +124,7 @@
                 for path, output in outputs.items():
                     gateway.succeed("nix-store --verify-path " + shlex.quote(output))
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts join shared_builds using (derivation_path) where derivation_path like '%telchar-" + mode + "-%' and shared_builds.state = 'succeeded' and shared_builds.backend_kind = 'static-ssh'\" | grep -qx 3")
+        stock_client.succeed(ssh + "timeout 90 nix-store --store " + store + " --realise " + shlex.quote(roots["build-paths"]))
         gateway.succeed("systemctl restart telchar-daemon.service")
         gateway.wait_for_unit("telchar-daemon.service")
         gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")

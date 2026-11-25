@@ -297,7 +297,19 @@ fn daemon_rejects_frontend_error_envelope_before_worker_protocol() {
 #[test]
 fn stalled_envelope_does_not_block_another_frontend() {
     let fixture = Fixture::start_persistent(1_000);
-    let mut stalled = UnixStream::connect(&fixture.socket).expect("stalled frontend connects");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut stalled = loop {
+        match UnixStream::connect(&fixture.socket) {
+            Ok(stream) => break stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ConnectionRefused
+                    && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("stalled frontend connection failed: {error}"),
+        }
+    };
     stalled
         .write_all(&8_u32.to_le_bytes())
         .expect("stalled length writes");

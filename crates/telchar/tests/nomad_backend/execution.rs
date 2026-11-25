@@ -338,11 +338,25 @@ fn stalled_submission_obeys_execution_deadline_and_retains_obligation() {
     )
     .unwrap();
     telchar::persistence::start_shared_build(database.url(), derivation).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (submission_finished, finished) = std::sync::mpsc::channel();
     let server = thread::spawn(move || {
-        let (mut request, _) = listener.accept().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut request = loop {
+            match listener.accept() {
+                Ok((request, _)) => break request,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if finished.try_recv().is_ok() || std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("submission listener failed: {error}"),
+            }
+        };
         assert!(read_http_request_with_body(&mut request).contains(&job));
         thread::sleep(Duration::from_secs(2));
-        drop(request);
+        true
     });
     let client = NomadClient::new(backend).unwrap();
     let builds = telchar::shared_build::SharedBuildRegistry::new();
@@ -363,7 +377,12 @@ fn stalled_submission_obeys_execution_deadline_and_retains_obligation() {
         &mut || Ok(false),
     );
     let elapsed = started.elapsed();
-    server.join().unwrap();
+    let _ = submission_finished.send(());
+    let submitted = server.join().unwrap();
+    assert!(
+        submitted,
+        "execution returned before HTTP submission: {result:?}; elapsed={elapsed:?}"
+    );
     assert!(result.is_err());
     assert!(
         elapsed < Duration::from_secs(1),

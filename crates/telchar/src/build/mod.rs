@@ -95,6 +95,26 @@ fn stored_load_error(phase: StoredLoadFailurePhase) -> io::Error {
 
 type StoredInputs = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
 
+pub(crate) fn stored_output_paths(
+    path: &std::path::Path,
+    backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
+) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let contents = load_derivation(path, backend, &mut (16 * 1024 * 1024))?;
+    let stored = derivation::parse(&contents)?;
+    let mut outputs = Vec::with_capacity(stored.outputs.len());
+    for (name, path, _, _) in stored.outputs {
+        if name.is_empty() || path.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported derivation output",
+            ));
+        }
+        outputs.push((name, path));
+    }
+    outputs.sort();
+    Ok(outputs)
+}
+
 fn load_derivation(
     path: &std::path::Path,
     backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),

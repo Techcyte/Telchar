@@ -8,6 +8,16 @@ fn cold_stored_dependencies_use_telchar_execution() {
 }
 
 #[test]
+fn build_paths_executes_cold_stored_dependencies() {
+    stored_dependency_request(false, false, 9);
+}
+
+#[test]
+fn build_paths_dependency_failure_preserves_session() {
+    stored_dependency_request(true, false, 9);
+}
+
+#[test]
 fn failed_stored_dependency_stops_root_and_preserves_session() {
     stored_dependency_build(true, false);
 }
@@ -18,6 +28,10 @@ fn prerequisite_survives_output_expiry_and_gc_before_consumer_admission() {
 }
 
 fn stored_dependency_build(fail: bool, collect: bool) {
+    stored_dependency_request(fail, collect, 46);
+}
+
+fn stored_dependency_request(fail: bool, collect: bool, operation: u64) {
     let root = tempfile::tempdir().unwrap();
     let expression = r#"
       let dependency = derivation {
@@ -52,6 +66,16 @@ fn stored_dependency_build(fail: bool, collect: bool) {
         "telchar-cold-stored-dependency"
     };
     let expression = expression.replace("telchar-cold-stored-dependency", dependency_name);
+    let expression = if operation == 9 {
+        expression.replace("telchar-cold-stored-", "telchar-build-paths-")
+    } else {
+        expression
+    };
+    let dependency_name = if operation == 9 {
+        "telchar-build-paths-dependency"
+    } else {
+        dependency_name
+    };
     let expression = expression.replace(
         "printf dependency > $out",
         if fail {
@@ -89,7 +113,7 @@ fn stored_dependency_build(fail: bool, collect: bool) {
     let mut input = fixture.frontend.stdin.take().unwrap();
     let mut output = fixture.frontend.stdout.take().unwrap();
     complete_handshake(&mut input, &mut output);
-    write_integer(&mut input, 46);
+    write_integer(&mut input, operation);
     write_integer(&mut input, 1);
     write_string(&mut input, format!("{drv}!out").as_bytes());
     write_integer(&mut input, 0);
@@ -145,19 +169,45 @@ fn stored_dependency_build(fail: bool, collect: bool) {
     while read_integer(&mut output) == nix_worker_protocol::STDERR_NEXT {
         read_string(&mut output);
     }
-    assert_eq!(read_integer(&mut output), 1);
-    assert_eq!(read_string(&mut output), format!("{drv}!out"));
-    assert_eq!(read_integer(&mut output), if fail { 3 } else { 0 });
-    let message = read_string(&mut output);
-    if fail {
-        assert!(!message.is_empty());
+    if operation == 9 && fail {
+        assert_eq!(read_string(&mut output), "Error");
+        assert_eq!(read_integer(&mut output), 0);
+        assert_eq!(read_string(&mut output), "Error");
+        assert!(!read_string(&mut output).is_empty());
+        assert_eq!(read_integer(&mut output), 0);
+        assert_eq!(read_integer(&mut output), 0);
     } else {
-        assert!(message.is_empty());
+        assert_eq!(read_integer(&mut output), 1);
     }
-    for _ in 0..6 {
-        read_integer(&mut output);
+    if operation == 46 {
+        assert_eq!(read_string(&mut output), format!("{drv}!out"));
+        assert_eq!(read_integer(&mut output), if fail { 3 } else { 0 });
+        let message = read_string(&mut output);
+        if fail {
+            assert!(!message.is_empty());
+        } else {
+            assert!(message.is_empty());
+        }
+        for _ in 0..6 {
+            read_integer(&mut output);
+        }
+        assert_eq!(read_integer(&mut output), 0);
     }
-    assert_eq!(read_integer(&mut output), 0);
+    if !fail {
+        write_integer(&mut input, 41);
+        write_string(&mut input, drv.as_bytes());
+        input.flush().unwrap();
+        assert_eq!(read_integer(&mut output), STDERR_LAST);
+        assert_eq!(read_integer(&mut output), 1);
+        assert_eq!(read_string(&mut output), "out");
+        let path = read_string(&mut output);
+        assert_eq!(fs::read(&path).unwrap(), b"dependency-root");
+        write_integer(&mut input, 10);
+        write_string(&mut input, path.as_bytes());
+        input.flush().unwrap();
+        assert_eq!(read_integer(&mut output), STDERR_LAST);
+        assert_eq!(read_integer(&mut output), 1);
+    }
     write_integer(&mut input, 31);
     write_integer(&mut input, 0);
     write_integer(&mut input, 0);

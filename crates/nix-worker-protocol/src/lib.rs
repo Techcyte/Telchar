@@ -1460,6 +1460,50 @@ fn write_query_missing_path_set(
     Ok(())
 }
 
+pub fn write_derivation_output_map_response(
+    output: &mut impl Write,
+    outputs: &[(Vec<u8>, Vec<u8>)],
+) -> io::Result<()> {
+    if outputs.len() > MAXIMUM_QUERY_VALID_PATHS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many derivation outputs",
+        ));
+    }
+    for (name, path) in outputs {
+        if name.is_empty()
+            || name.len() > 256
+            || !name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"+-._?=".contains(byte))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid derivation output name",
+            ));
+        }
+        validate_store_path(path).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid derivation output path",
+            )
+        })?;
+    }
+    if outputs.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unordered derivation outputs",
+        ));
+    }
+    write_worker_integer_to(output, STDERR_LAST)?;
+    write_worker_integer_to(output, outputs.len() as u64)?;
+    for (name, path) in outputs {
+        write_worker_byte_string_to(output, name)?;
+        write_worker_byte_string_to(output, path)?;
+    }
+    output.flush()
+}
+
 pub fn write_query_valid_paths_response(
     output: &mut impl Write,
     paths: impl IntoIterator<Item = impl AsRef<[u8]>>,

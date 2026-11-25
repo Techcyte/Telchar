@@ -82,7 +82,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     }
 
     macro_rules! execute_admitted_build {
-        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $failure_target:expr, $write_success:expr $(,)?) => {{
+        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $failure_target:expr, $structured_failure:expr, $write_success:expr $(,)?) => {{
             'execution: {
             let admitted = $admitted;
             let request_started = $request_started;
@@ -982,9 +982,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                     if let Some(build_audit) = build_audit.as_ref() { build_audit.completed("failed", Vec::new()); }
                     if !requester_detached.get() {
-                        nix_worker_protocol::write_build_failure_response(
-                            &mut output, negotiated.version, $failure_target, failure.status, &failure.message,
-                        )?;
+                        if $structured_failure {
+                            nix_worker_protocol::write_build_failure_response(
+                                &mut output, negotiated.version, $failure_target, failure.status, &failure.message,
+                            )?;
+                        } else {
+                            nix_worker_protocol::write_worker_error(&mut output, &failure.message)?;
+                            output.flush()?;
+                        }
                     }
                     crate::service::metrics::build_request_finished(request_started.elapsed(), "failed", Some("nix-build"));
                     break 'execution false;
@@ -1397,6 +1402,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request.platform(),
                     build_audit,
                     None,
+                    true,
                     |output, version, already_valid, build: &BuildRequest| {
                         nix_worker_protocol::write_build_derivation_success_response(
                             output,
@@ -1407,7 +1413,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     },
                 );
             }
-            Ok(WorkerOperation::BuildPathsWithResults) => {
+            Ok(
+                operation @ (WorkerOperation::BuildPaths | WorkerOperation::BuildPathsWithResults),
+            ) => {
+                let with_results = operation == WorkerOperation::BuildPathsWithResults;
+                let operation_name = if with_results {
+                    "BuildPathsWithResults"
+                } else {
+                    "BuildPaths"
+                };
                 let request_started = std::time::Instant::now();
                 let request = match crate::service::activity::run("decode-build", || {
                     reader.complete_build_paths_with_results()
@@ -1417,14 +1431,16 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                     Ok(request) => {
                         let message = if request.targets().len() != 1 {
-                            "BuildPathsWithResults requires one target; use a local Nix daemon with --builders ssh-ng://telchar for multiple targets"
+                            format!(
+                                "{operation_name} requires one target; use a local Nix daemon with --builders ssh-ng://telchar for multiple targets"
+                            )
                         } else {
-                            "unsupported BuildPathsWithResults request"
+                            format!("unsupported {operation_name} request")
                         };
                         return reject(
                             &mut output,
                             "unsupported-build-paths-with-results",
-                            message,
+                            &message,
                         );
                     }
                     Err(_) => {
@@ -1469,11 +1485,17 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 vec![String::from_utf8_lossy(target).into_owned()],
                             );
                         }
-                        nix_worker_protocol::write_build_paths_with_results_success_response(
-                            &mut output,
-                            negotiated.version,
-                            [(target.as_slice(), true)],
-                        )?;
+                        if with_results {
+                            nix_worker_protocol::write_build_paths_with_results_success_response(
+                                &mut output,
+                                negotiated.version,
+                                [(target.as_slice(), true)],
+                            )?;
+                        } else {
+                            output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                            output.write_all(&1_u64.to_le_bytes())?;
+                            output.flush()?;
+                        }
                         crate::service::metrics::build_request_finished(
                             request_started.elapsed(),
                             "succeeded",
@@ -1613,11 +1635,17 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             dependency_audit.as_ref()
                         },
                         Some(target.as_slice()),
+                        with_results,
                         |output: &mut output::SessionOutput,
                          version,
                          already_valid,
                          _build: &BuildRequest| {
-                            if terminal {
+                            if terminal && !with_results {
+                                output
+                                    .write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                                output.write_all(&1_u64.to_le_bytes())?;
+                                output.flush()?;
+                            } else if terminal {
                                 nix_worker_protocol::write_build_paths_with_results_success_response(
                                     output,
                                     version,
@@ -1631,6 +1659,79 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         break;
                     }
                 }
+            }
+            Ok(WorkerOperation::EnsurePath) => {
+                let request = match reader.complete_store_path_request() {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-ensure-path",
+                            "invalid EnsurePath request",
+                        );
+                    }
+                };
+                let paths = [request.path().to_vec()];
+                let valid = match store_query.query_valid_paths(&paths, false) {
+                    Ok(valid) => valid,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "ensure-path",
+                            "EnsurePath validity query failed",
+                        );
+                    }
+                };
+                if valid != paths {
+                    if store_substitution.ensure_path(request.path()).is_err() {
+                        return reject(
+                            &mut output,
+                            "ensure-path",
+                            "EnsurePath substitution failed",
+                        );
+                    }
+                    if store_query.query_valid_paths(&paths, false).ok().as_deref()
+                        != Some(paths.as_slice())
+                    {
+                        return reject(&mut output, "ensure-path", "EnsurePath output unavailable");
+                    }
+                }
+                output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                output.write_all(&1_u64.to_le_bytes())?;
+                output.flush()?;
+            }
+            Ok(WorkerOperation::QueryDerivationOutputMap) => {
+                let request = match reader.complete_store_path_request() {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-output-map",
+                            "invalid derivation output map request",
+                        );
+                    }
+                };
+                let path = match std::str::from_utf8(request.path()) {
+                    Ok(path) if path.ends_with(".drv") => std::path::Path::new(path),
+                    _ => {
+                        return reject(
+                            &mut output,
+                            "invalid-output-map",
+                            "invalid derivation output map request",
+                        );
+                    }
+                };
+                let outputs = match crate::build::stored_output_paths(path, store_export) {
+                    Ok(outputs) => outputs,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "output-map",
+                            "derivation output map unavailable",
+                        );
+                    }
+                };
+                nix_worker_protocol::write_derivation_output_map_response(&mut output, &outputs)?;
             }
             Ok(WorkerOperation::QueryPathInfo) => {
                 let request = match reader.complete_store_path_request() {

@@ -44,8 +44,8 @@ Compatibility claims come from code and tests, not a separate support manifest.
 
 ## Direct-store target boundary
 
-Direct `ssh-ng` store requests support one `BuildPathsWithResults` target in
-normal build mode. Requests containing multiple targets are rejected before
+Direct `ssh-ng` store requests support one `BuildPaths` or
+`BuildPathsWithResults` target in normal build mode. Requests containing multiple targets are rejected before
 build admission. For multiple installables, use a local Nix daemon configured
 with `--builders ssh-ng://telchar` so the local daemon owns the build graph and
 submits individual builds to Telchar. Replace `telchar` with the configured SSH

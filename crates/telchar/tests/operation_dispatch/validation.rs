@@ -116,13 +116,22 @@ fn mismatched_build_derivation_system_is_rejected_before_execution() {
 
 #[test]
 fn multiple_direct_store_targets_explain_daemon_offload_mode() {
+    direct_store_target_rejection(46);
+}
+
+#[test]
+fn multiple_build_paths_targets_explain_daemon_offload_mode() {
+    direct_store_target_rejection(9);
+}
+
+fn direct_store_target_rejection(operation: u64) {
     let mut fixture = FrontendFixture::spawn(None);
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_integer(&mut input, 46);
+    write_integer(&mut input, operation);
     write_integer(&mut input, 2);
     for name in ["first", "second"] {
         write_string(
@@ -141,7 +150,14 @@ fn multiple_direct_store_targets_explain_daemon_offload_mode() {
     assert_eq!(read_string(&mut output), "Error");
     assert_eq!(
         read_string(&mut output),
-        "BuildPathsWithResults requires one target; use a local Nix daemon with --builders ssh-ng://telchar for multiple targets"
+        format!(
+            "{} requires one target; use a local Nix daemon with --builders ssh-ng://telchar for multiple targets",
+            if operation == 9 {
+                "BuildPaths"
+            } else {
+                "BuildPathsWithResults"
+            }
+        )
     );
     assert_eq!(read_integer(&mut output), 0, "error has no position");
     assert_eq!(read_integer(&mut output), 0, "error has no trace");
@@ -154,6 +170,34 @@ fn multiple_direct_store_targets_explain_daemon_offload_mode() {
         "{stderr}"
     );
     assert!(!stderr.contains("gateway.stored_build.failed"), "{stderr}");
+}
+
+#[test]
+fn ensure_path_missing_output_returns_substitution_error() {
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///nix/var/nix/daemon-socket/socket",
+        std::iter::empty::<(&str, String)>(),
+    );
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    write_integer(&mut input, 10);
+    write_string(
+        &mut input,
+        b"/nix/store/11111111111111111111111111111111-telchar-missing-output",
+    );
+    input.flush().unwrap();
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "EnsurePath substitution failed");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 0);
+    drop(input);
+    drop(output);
+    assert!(fixture.frontend.wait().unwrap().success());
+    assert!(fixture.finish().contains("ensure-path"));
 }
 
 #[test]
