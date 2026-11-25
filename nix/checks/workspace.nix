@@ -87,9 +87,16 @@ pkgs.testers.nixosTest {
     machine.succeed("df -h /build && cp -a ${artifacts}/target /build/source/target", timeout=1200)
     machine.succeed("cp -a ${artifacts}/cargo-home /build/cargo-home")
     machine.succeed("chown -R runner:users /build && chmod -R u+w /build")
+    machine.succeed("mount -t tracefs tracefs /sys/kernel/tracing || test -d /sys/kernel/tracing/events/signal; echo 'sig == 9' > /sys/kernel/tracing/events/signal/signal_generate/filter; echo 16384 > /sys/kernel/tracing/buffer_size_kb; echo 1 > /sys/kernel/tracing/events/signal/signal_generate/enable; echo 1 > /sys/kernel/tracing/events/sched/sched_process_exec/enable; echo 1 > /sys/kernel/tracing/events/sched/sched_process_fork/enable; echo 1 > /sys/kernel/tracing/tracing_on")
     try:
         machine.succeed("${pkgs.bash}/bin/bash -o pipefail -c \"su -s ${pkgs.bash}/bin/bash runner -c '${run}' 2>&1 | tee /tmp/workspace.log /dev/console\"", timeout=2400)
     finally:
+        machine.succeed("cat /sys/kernel/tracing/trace > /tmp/signals.log; journalctl -k --no-pager > /tmp/kernel.log; journalctl -u systemd-oomd --no-pager > /tmp/oomd.log")
+        machine.succeed("find /tmp -maxdepth 3 -name daemon.log -exec sh -c 'echo DAEMON_LOG=$1; cat \"$1\"' sh {} \\; > /tmp/daemons.log")
+        machine.copy_from_machine("/tmp/signals.log")
+        machine.copy_from_machine("/tmp/daemons.log")
+        machine.copy_from_machine("/tmp/kernel.log")
+        machine.copy_from_machine("/tmp/oomd.log")
         machine.copy_from_machine("/tmp/workspace.log")
   '';
 }

@@ -63,7 +63,7 @@ fn mixed_batches(duration: Duration) {
                 0 => format!("{} 1; printf load-{index} > $out", sleep.trim()),
                 1 => format!("{} 10; printf load-{index} > $out", sleep.trim()),
                 2 => format!(
-                    "{} if=/dev/zero of=$out bs=1048576 count=32 status=none",
+                    "{} if=/dev/zero of=$out bs=1048576 count=32 status=none; status=$?; exit $status",
                     dd.trim()
                 ),
                 _ => format!("printf load-{index} > $out"),

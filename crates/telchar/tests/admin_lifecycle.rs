@@ -306,7 +306,9 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             .unwrap(),
     );
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !admin.exists() {
+    while !std::fs::metadata(&admin)
+        .is_ok_and(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
+    {
         assert!(
             daemon.0.try_wait().unwrap().is_none(),
             "daemon exited before administrative readiness"
