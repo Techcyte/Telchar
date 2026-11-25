@@ -131,11 +131,26 @@ fn load_derivation(
     Ok(contents)
 }
 
+fn load_cached_derivation(
+    path: &std::path::Path,
+    backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
+    remaining_bytes: &mut u64,
+    derivations: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+) -> io::Result<Vec<u8>> {
+    if let Some(contents) = derivations.get(path) {
+        return Ok(contents.clone());
+    }
+    let contents = load_derivation(path, backend, remaining_bytes)?;
+    derivations.insert(path.to_owned(), contents.clone());
+    Ok(contents)
+}
+
 struct StoredBuilds<'a, B: ?Sized> {
     backend: &'a mut B,
     roots: &'a mut dyn crate::store::export::TemporaryRoots,
     backends: &'a [BackendTarget],
     remaining_bytes: u64,
+    derivations: std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
     visiting: BTreeSet<Vec<u8>>,
     completed: BTreeSet<Vec<u8>>,
     builds: Vec<BuildRequest>,
@@ -164,13 +179,19 @@ impl<B: crate::store::export::StoreExportBackend + ?Sized> StoredBuilds<'_, B> {
             self.backend,
             self.backends,
             &mut self.remaining_bytes,
+            &mut self.derivations,
         )?;
         for (input_path, output_names) in inputs {
             let input_path = std::path::Path::new(
                 std::str::from_utf8(&input_path)
                     .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyPath))?,
             );
-            let contents = load_derivation(input_path, self.backend, &mut self.remaining_bytes)?;
+            let contents = load_cached_derivation(
+                input_path,
+                self.backend,
+                &mut self.remaining_bytes,
+                &mut self.derivations,
+            )?;
             let input = derivation::parse(&contents)
                 .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
             let mut missing = false;
@@ -268,8 +289,14 @@ impl BuildRequest {
         backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
         backends: &[BackendTarget],
     ) -> io::Result<Self> {
-        Self::load_stored_with_inputs(derivation_path, backend, backends, &mut (64 * 1024 * 1024))
-            .map(|(request, _)| request)
+        Self::load_stored_with_inputs(
+            derivation_path,
+            backend,
+            backends,
+            &mut (64 * 1024 * 1024),
+            &mut Default::default(),
+        )
+        .map(|(request, _)| request)
     }
 
     pub fn load_stored_builds(
@@ -283,6 +310,7 @@ impl BuildRequest {
             roots,
             backends,
             remaining_bytes: 64 * 1024 * 1024,
+            derivations: Default::default(),
             visiting: BTreeSet::new(),
             completed: BTreeSet::new(),
             builds: Vec::new(),
@@ -295,9 +323,11 @@ impl BuildRequest {
         backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
         backends: &[BackendTarget],
         remaining_bytes: &mut u64,
+        derivations: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
     ) -> io::Result<(Self, StoredInputs)> {
-        let contents = load_derivation(derivation_path, backend, remaining_bytes)
-            .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootExport))?;
+        let contents =
+            load_cached_derivation(derivation_path, backend, remaining_bytes, derivations)
+                .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootExport))?;
         let mut request = Self::from_stored_derivation(
             derivation_path.as_os_str().as_encoded_bytes(),
             &contents,
@@ -315,8 +345,9 @@ impl BuildRequest {
                 std::str::from_utf8(input_derivation)
                     .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyPath))?,
             );
-            let input_contents = load_derivation(input_path, backend, remaining_bytes)
-                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
+            let input_contents =
+                load_cached_derivation(input_path, backend, remaining_bytes, derivations)
+                    .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
             let input = derivation::parse(&input_contents)
                 .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
             for output_name in output_names {

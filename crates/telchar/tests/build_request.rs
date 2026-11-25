@@ -279,6 +279,7 @@ fn loads_selected_input_derivation_outputs() {
     struct Backend {
         nars: BTreeMap<PathBuf, Vec<u8>>,
         built: Vec<Vec<u8>>,
+        exports: Vec<PathBuf>,
         roots: std::sync::Arc<std::sync::Mutex<BTreeSet<Vec<u8>>>>,
     }
     struct Roots(std::sync::Arc<std::sync::Mutex<BTreeSet<Vec<u8>>>>);
@@ -325,6 +326,7 @@ fn loads_selected_input_derivation_outputs() {
             _nar_size: u64,
             sink: &mut dyn io::Write,
         ) -> io::Result<()> {
+            self.exports.push(request.path.clone());
             sink.write_all(
                 self.nars.get(&request.path).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::NotFound, "missing fixture NAR")
@@ -345,6 +347,7 @@ fn loads_selected_input_derivation_outputs() {
             (dependency_path.clone(), regular_nar(dependency)),
         ]),
         built: Vec::new(),
+        exports: Vec::new(),
         roots: Default::default(),
     };
     let mut roots = Roots(backend.roots.clone());
@@ -357,6 +360,7 @@ fn loads_selected_input_derivation_outputs() {
         backend.built.is_empty(),
         "loading must not execute daemon builds"
     );
+    backend.exports.clear();
     let builds = BuildRequest::load_stored_builds(
         &root_path,
         &mut backend,
@@ -364,6 +368,11 @@ fn loads_selected_input_derivation_outputs() {
         &backends("x86_64-linux", &[]),
     )
     .expect("cold graph loads");
+    assert_eq!(
+        backend.exports,
+        vec![root_path.clone(), dependency_path.clone()],
+        "each immutable derivation exports once per graph admission"
+    );
     assert_eq!(
         builds
             .iter()
