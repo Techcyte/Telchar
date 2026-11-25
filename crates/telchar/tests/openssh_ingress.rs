@@ -435,7 +435,7 @@ impl Fixture {
         .nth(1)
         .expect("fingerprint exists")
         .to_owned();
-        let port = 20000 + (unique_suffix() % 20000) as u16;
+        let (port_reservation, port) = reserve_tcp_port();
         let forced = root.join("forced-command.sh");
         fs::write(
             &forced,
@@ -485,6 +485,7 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
         )
         .expect("sshd config writes");
         let sshd_log = root.join("sshd.log");
+        drop(port_reservation);
         let mut sshd_child = Command::new(&sshd)
             .args(["-D", "-e", "-f", config.to_str().unwrap()])
             .env_clear()
@@ -631,6 +632,11 @@ fn wait_for_path(path: &Path, child: &mut Child) {
                     .take(8192)
                     .read_to_string(&mut diagnostic)
                     .expect("child diagnostic reads");
+            }
+            if let Some(parent) = path.parent()
+                && let Ok(log) = fs::read_to_string(parent.join("sshd.log"))
+            {
+                diagnostic.push_str(&log);
             }
             panic!("child exited before fixture was ready: {path:?}, {status}, {diagnostic}");
         }

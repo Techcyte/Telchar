@@ -183,7 +183,19 @@ impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
                 std::path::Path::new(path),
                 authority.expected_content_address().as_deref(),
                 &mut export,
-            )?;
+            )
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData
+                    && error.to_string() == "build output content address mismatch"
+                {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "recovered output content address mismatch",
+                    )
+                } else {
+                    error
+                }
+            })?;
         }
         Ok(())
     }

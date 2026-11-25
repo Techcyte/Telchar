@@ -743,6 +743,22 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         assert!(state.get::<_, bool>(0));
         assert!(state.get::<_, bool>(1));
         assert_eq!(state.get::<_, i64>(2), 0);
+    } else if matches!(scenario, Scenario::StalledTransport) {
+        assert!(!stderr.contains("ERROR"), "{stderr}");
+        let warnings = stderr
+            .lines()
+            .filter(|line| line.contains(" WARN "))
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "{stderr}");
+        assert!(
+            warnings[0].contains("event=\"database.singleton_ownership.release_failed\""),
+            "{stderr}"
+        );
+        assert!(warnings[0].contains("phase=\"update\""), "{stderr}");
+        assert!(
+            warnings[0].contains("diagnostic=database connection deadline exceeded"),
+            "{stderr}"
+        );
     } else {
         assert!(
             !stderr.contains("ERROR") && !stderr.contains("WARN"),

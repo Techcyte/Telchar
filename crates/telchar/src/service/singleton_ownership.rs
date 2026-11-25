@@ -420,13 +420,24 @@ impl Drop for SingletonOwnership {
             .failure
             .get_or_insert(SingletonOwnershipFailure::Fenced);
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
-        let Ok(mut connection) = self.renewal_database.connection_until(deadline) else {
-            return;
+        let mut connection = match self.renewal_database.connection_until(deadline) {
+            Ok(connection) => connection,
+            Err(_) => {
+                tracing::warn!(
+                    event = "database.singleton_ownership.release_failed",
+                    phase = "connection",
+                    owner_kind = self.owner_kind,
+                    "ownership lease release could not acquire connection"
+                );
+                return;
+            }
         };
-        let _ = connection.execute(
+        if let Err(error) = connection.execute(
             "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp(), updated_at = clock_timestamp() WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3",
             &[&self.owner_kind, &self.owner_token, &self.generation],
-        );
+        ) {
+            tracing::warn!(event = "database.singleton_ownership.release_failed", phase = "update", owner_kind = self.owner_kind, diagnostic = %error, sql_state = error.code().map(|code| code.code()).unwrap_or("none"), "ownership lease release update failed");
+        }
     }
 }
 

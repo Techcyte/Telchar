@@ -607,7 +607,8 @@ chunk_bytes = 262144
             .query_one("SELECT count(*) FROM singleton_ownership WHERE lease_expires_at > clock_timestamp()", &[])
             .unwrap()
             .get::<_, i64>(0),
-        0
+        0,
+        "daemon exited with an active ownership lease: {stderr}"
     );
     assert!(!socket.exists());
     assert!(std::net::TcpListener::bind(gateway).is_ok());
