@@ -339,7 +339,12 @@ impl BuildRequest {
         })?;
         let stored = derivation::parse(&contents)
             .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootParse))?;
-        request.input_sources = stored.input_sources;
+        request.input_sources.retain(|path| {
+            !stored
+                .input_derivations
+                .iter()
+                .any(|(derivation, _)| derivation == path)
+        });
         for (input_derivation, output_names) in &stored.input_derivations {
             let input_path = std::path::Path::new(
                 std::str::from_utf8(input_derivation)
@@ -527,11 +532,14 @@ impl BuildRequest {
                 hash: output.hash().to_vec(),
             });
         }
+        let mut input_sources = request.input_sources().to_vec();
+        input_sources.sort();
+        input_sources.dedup();
         let admitted = Self {
             derivation_path: request.drv_path().to_vec(),
             expected_outputs,
             output_authorities,
-            input_sources: request.input_sources().to_vec(),
+            input_sources,
             system: system.to_owned(),
             required_system_features,
             builder: request.builder().to_vec(),
@@ -635,6 +643,12 @@ impl BuildRequest {
 
     pub fn output_authorities(&self) -> &[OutputAuthority] {
         &self.output_authorities
+    }
+
+    pub(crate) fn set_input_closure(&mut self, mut paths: Vec<Vec<u8>>) {
+        paths.sort();
+        paths.dedup();
+        self.input_sources = paths;
     }
 
     pub fn input_sources(&self) -> &[Vec<u8>] {

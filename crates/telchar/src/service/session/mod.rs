@@ -84,11 +84,23 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     macro_rules! execute_admitted_build {
         ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $failure_target:expr, $structured_failure:expr, $write_success:expr $(,)?) => {{
             'execution: {
-            let admitted = $admitted;
+            let mut admitted = $admitted;
             let request_started = $request_started;
             let build_mode = $build_mode;
             let requested_system = $requested_system;
             let build_audit = $build_audit;
+                let cached_build = crate::persistence::read_shared_build(database, std::str::from_utf8(admitted.derivation_path()).map_err(|_| io::Error::other("invalid derivation path"))?)
+                    .map_err(|_| io::Error::other("cached build lookup failed"))?;
+                let mut cached_input_roots = None;
+                if cached_build.is_some_and(|build| build.state == crate::persistence::SharedBuildState::Succeeded && build.request_digest != admitted.shared_build_digest()) {
+                    let mut roots = store_export.temporary_roots()?;
+                    for path in admitted.input_sources() {
+                        roots.retain(path)?;
+                    }
+                    let closure = store_closure.input_closure(admitted.input_sources())?;
+                    admitted.set_input_closure(closure.into_iter().map(|path| path.store_path.into_bytes()).collect());
+                    cached_input_roots = Some(roots);
+                }
                 let cached = return_cached_outputs(
                     &admitted,
                     database,
@@ -106,6 +118,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         return reject(&mut output, "cached-build-rejected", "cached build metadata could not be validated");
                     }
                 };
+                drop(cached_input_roots);
                 if cached {
                     if let Some(build_audit) = build_audit.as_ref() {
                         build_audit.completed("already-valid", admitted.expected_outputs().iter()
@@ -291,6 +304,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                admitted.set_input_closure(closure.iter().map(|path| path.store_path.as_bytes().to_vec()).collect());
                 let input_leases = closure
                     .into_iter()
                     .enumerate()

@@ -267,6 +267,24 @@ fn loads_registered_derivation_through_store_export() {
     )
     .expect("registered derivation loads");
     assert_eq!(request.derivation_path(), drv_path());
+    let builder = b"/nix/store/44444444444444444444444444444444-bash";
+    let contents = std::str::from_utf8(contents).unwrap().replace(
+        "/bin/sh",
+        "/nix/store/44444444444444444444444444444444-bash/bin/bash",
+    );
+    backend.nar = regular_nar(contents.as_bytes());
+    backend.metadata.nar_hash = sha2::Sha256::digest(&backend.nar).into();
+    backend.metadata.nar_size = backend.nar.len() as u64;
+    let request = BuildRequest::load_stored(
+        Path::new(std::str::from_utf8(drv_path()).unwrap()),
+        &mut backend,
+        &backends("x86_64-linux", &[]),
+    )
+    .unwrap();
+    assert!(
+        request.input_sources().iter().any(|path| path == builder),
+        "full stored loader retains store-resident builder"
+    );
 }
 
 #[test]
