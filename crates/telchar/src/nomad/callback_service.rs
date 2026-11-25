@@ -842,9 +842,15 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 validate_output_authority(build_request.output_authorities(), &metadata)?;
                 session.accept(Direction::WorkerToGateway, frame)?;
                 object_permit = Some(object_admission.admit_inbound()?);
+                let expected_content_address = build_request
+                    .output_authorities()
+                    .iter()
+                    .find(|authority| authority.path() == metadata.path.as_bytes())
+                    .and_then(|authority| authority.expected_content_address());
                 current = Some(OutputImport::new(
                     gateway_store,
                     metadata,
+                    expected_content_address,
                     limits.stream_buffer_bytes(),
                 )?);
             }
@@ -977,7 +983,9 @@ fn validate_output_authority(
                 "Nomad output authority is unavailable",
             )
         })?;
-    if metadata.content_address.as_deref() != authority.expected_content_address().as_deref() {
+    if metadata.content_address.is_some()
+        && metadata.content_address.as_deref() != authority.expected_content_address().as_deref()
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Nomad output content address mismatch",
@@ -1236,6 +1244,7 @@ fn ensure_before(deadline: Instant, error: &str) -> io::Result<()> {
 
 struct OutputImport {
     metadata: PathManifestEntry,
+    expected_content_address: Option<String>,
     store: GatewayStoreConnection,
     temporary: tempfile::SpooledTempFile,
     _disk_reservation: crate::service::disk_reserve::DiskReservation,
@@ -1248,6 +1257,7 @@ impl OutputImport {
     fn new(
         endpoint: &GatewayStoreEndpoint,
         metadata: PathManifestEntry,
+        expected_content_address: Option<String>,
         memory_bytes: usize,
     ) -> io::Result<Self> {
         crate::service::metrics::transfer_started("inbound", "build_output", "nomad_callback");
@@ -1268,6 +1278,7 @@ impl OutputImport {
                 })?;
             Ok(Self {
                 metadata,
+                expected_content_address,
                 store: GatewayStoreConnection::connect(endpoint)?,
                 temporary: tempfile::SpooledTempFile::new(memory_bytes),
                 _disk_reservation: reservation,
@@ -1322,6 +1333,15 @@ impl OutputImport {
                 "Nomad output NAR length is inconsistent",
             ));
         }
+        io::Seek::rewind(&mut self.temporary)?;
+        let hash = crate::store::export::parse_sha256_hex(&self.metadata.nar_hash)?;
+        crate::store::export::validate_output_nar(
+            &mut self.temporary,
+            hash,
+            self.metadata.nar_size,
+            self.metadata.content_address.as_deref(),
+            self.expected_content_address.as_deref(),
+        )?;
         io::Seek::rewind(&mut self.temporary)?;
         let references = self
             .metadata
@@ -1483,6 +1503,86 @@ mod tests {
     use tracing_subscriber::prelude::*;
 
     #[test]
+    fn worker_output_receipt_verifies_missing_content_address() {
+        let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+            let output = std::process::Command::new("bash")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/canonical-store.sh"))
+                .args([std::env::current_exe().unwrap().as_os_str(), std::ffi::OsStr::new("--exact"), std::ffi::OsStr::new("nomad::callback_service::tests::worker_output_receipt_verifies_missing_content_address")])
+                .output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+            return;
+        };
+        let endpoint = crate::store::daemon::GatewayStoreEndpoint::parse(&uri).unwrap();
+        let mut nar = Vec::new();
+        for word in [
+            b"nix-archive-1".as_slice(),
+            b"(",
+            b"type",
+            b"regular",
+            b"contents",
+            b"",
+            b")",
+        ] {
+            nar.extend_from_slice(&(word.len() as u64).to_le_bytes());
+            nar.extend_from_slice(word);
+            nar.resize(nar.len().next_multiple_of(8), 0);
+        }
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(&nar)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let expected = "fixed:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73";
+        for wrong in [true, false] {
+            let metadata = PathManifestEntry {
+                path: format!(
+                    "/nix/store/{}-callback-output",
+                    if wrong {
+                        "c".repeat(32)
+                    } else {
+                        "d".repeat(32)
+                    }
+                ),
+                nar_hash: hash.clone(),
+                nar_size: nar.len() as u64,
+                references: vec![],
+                deriver: None,
+                content_address: None,
+            };
+            let mut import = super::OutputImport::new(
+                &endpoint,
+                metadata.clone(),
+                Some(
+                    if wrong {
+                        "fixed:sha256:wrong"
+                    } else {
+                        expected
+                    }
+                    .into(),
+                ),
+                4096,
+            )
+            .unwrap();
+            std::io::Write::write_all(&mut import.temporary, &nar).unwrap();
+            import.received = nar.len() as u64;
+            let result = import.finish();
+            let mut store =
+                crate::store::daemon::GatewayStoreConnection::connect(&endpoint).unwrap();
+            if wrong {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "build output content address mismatch"
+                );
+                assert!(!store.is_valid_path(metadata.path.as_bytes()).unwrap());
+            } else {
+                assert!(result.unwrap().accepted);
+                assert!(store.is_valid_path(metadata.path.as_bytes()).unwrap());
+            }
+        }
+    }
+
+    #[test]
     fn worker_output_content_address_must_match_admitted_authority() {
         let path = "/nix/store/11111111111111111111111111111111-output";
         let authority: crate::build::OutputAuthority = serde_json::from_value(serde_json::json!({
@@ -1498,9 +1598,7 @@ mod tests {
             deriver: None,
             content_address: None,
         };
-        assert!(
-            super::validate_output_authority(std::slice::from_ref(&authority), &metadata).is_err()
-        );
+        super::validate_output_authority(std::slice::from_ref(&authority), &metadata).unwrap();
         metadata.content_address = authority.expected_content_address();
         super::validate_output_authority(std::slice::from_ref(&authority), &metadata).unwrap();
         metadata.path = "/nix/store/22222222222222222222222222222222-foreign".into();

@@ -181,6 +181,50 @@ fn rejects_fixed_output_with_wrong_content_without_address_metadata() {
 }
 
 #[test]
+fn staged_output_requires_verified_content_authority() {
+    let nar = regular_nar(CONTENT);
+    let expected = "fixed:sha256:0vsjq5dgdjaafm6fpylzcaknxsfzwczaqcw37gsghrl5adrrakwq";
+    telchar::store::export::validate_output_nar(
+        nar.as_slice(),
+        NAR_HASH,
+        nar.len() as u64,
+        None,
+        Some(expected),
+    )
+    .unwrap();
+    assert!(
+        telchar::store::export::validate_output_nar(
+            nar.as_slice(),
+            NAR_HASH,
+            nar.len() as u64,
+            Some("fixed:sha256:conflicting"),
+            Some(expected)
+        )
+        .is_err()
+    );
+    assert!(
+        telchar::store::export::validate_output_nar(
+            nar.as_slice(),
+            NAR_HASH,
+            nar.len() as u64,
+            None,
+            Some("fixed:sha256:wrong")
+        )
+        .is_err()
+    );
+    assert!(
+        telchar::store::export::validate_output_nar(
+            nar.as_slice(),
+            [0; 32],
+            nar.len() as u64,
+            None,
+            Some(expected)
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn verifies_flat_content_across_export_chunks() {
     let mut backend =
         RecordingExportBackend::successful(registered_path_info(), regular_nar(CONTENT));

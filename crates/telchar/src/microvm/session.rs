@@ -345,12 +345,16 @@ impl Session {
                         .iter()
                         .find(|output| output.path() == metadata.path.as_bytes())
                         .ok_or_else(|| io::Error::other("MicroVM output is not admitted"))?;
-                    if authority.expected_content_address() != metadata.content_address {
+                    if metadata.content_address.is_some()
+                        && authority.expected_content_address() != metadata.content_address
+                    {
                         return Err(io::Error::other(
                             "MicroVM output content address is not admitted",
                         ));
                     }
                     output_permit = Some(self.object_admission.admit_inbound()?);
+                    self.outputs
+                        .set_content_authority(authority.expected_content_address());
                     self.outputs.declare(metadata)?;
                 }
                 FrameKind::OutputNar => {

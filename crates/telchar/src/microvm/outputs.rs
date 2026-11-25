@@ -20,6 +20,7 @@ pub struct Outputs {
         std::fs::File,
         crate::service::disk_reserve::DiskReservation,
     )>,
+    expected_content_address: Option<Option<String>>,
     disk_reserve: crate::service::disk_reserve::DiskReserve,
     store_directory: PathBuf,
 }
@@ -43,9 +44,14 @@ impl Outputs {
             endpoint,
             staging,
             current: None,
+            expected_content_address: None,
             disk_reserve: crate::service::disk_reserve::DiskReserve::from_environment()?,
             store_directory: crate::service::disk_reserve::gateway_store_directory()?,
         })
+    }
+
+    pub(crate) fn set_content_authority(&mut self, expected: Option<String>) {
+        self.expected_content_address = Some(expected);
     }
 
     pub fn declare(&mut self, metadata: PathManifestEntry) -> io::Result<()> {
@@ -105,6 +111,18 @@ impl Outputs {
             *byte = u8::from_str_radix(std::str::from_utf8(pair).map_err(io::Error::other)?, 16)
                 .map_err(io::Error::other)?;
         }
+        crate::store::export::validate_output_nar(
+            &mut *file,
+            hash,
+            metadata.nar_size,
+            metadata.content_address.as_deref(),
+            self.expected_content_address
+                .as_ref()
+                .map_or(metadata.content_address.as_deref(), |expected| {
+                    expected.as_deref()
+                }),
+        )?;
+        file.seek(SeekFrom::Start(0))?;
         let declared = DeclaredPathInfo {
             path: metadata.path.clone().into(),
             nar_hash: hash,

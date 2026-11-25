@@ -176,8 +176,9 @@ fn receipts_require_authoritative_registration() {
         Some("rate"),
         None,
     ] {
-        gateway_session(&endpoint, staging.path(), &metadata, &nar, rejection);
+        gateway_session(&endpoint, staging.path(), &metadata, &nar, rejection, false);
     }
+    gateway_session(&endpoint, staging.path(), &metadata, &nar, None, true);
 }
 
 fn gateway_session(
@@ -186,12 +187,17 @@ fn gateway_session(
     input: &PathManifestEntry,
     nar: &[u8],
     rejection: Option<&str>,
+    fixed: bool,
 ) {
     use std::net::TcpListener;
     use std::time::Duration;
     use telchar::microvm::session::{Limits, Session};
     use telchar::nomad::protocol::*;
-    let output = "/nix/store/dddddddddddddddddddddddddddddddd-session-output";
+    let output = if fixed {
+        "/nix/store/ffffffffffffffffffffffffffffffff-session-output"
+    } else {
+        "/nix/store/dddddddddddddddddddddddddddddddd-session-output"
+    };
     let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-session.drv";
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -374,6 +380,19 @@ fn gateway_session(
             r#"Derive([("out","{output}","","")],[],["{}"],"aarch64-linux","/bin/sh",[],[("out","{output}"),("system","aarch64-linux"),("builder","/bin/sh"),("name","session")])"#,
             input.path
         );
+        let derivation = if fixed {
+            let hash = Sha256::digest(b"microvm-output".repeat(8192))
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            derivation.replacen(
+                &format!("\"{output}\",\"\",\"\""),
+                &format!("\"{output}\",\"sha256\",\"{hash}\""),
+                1,
+            )
+        } else {
+            derivation
+        };
         let request = telchar::build::BuildRequest::from_stored_derivation(
             drv.as_bytes(),
             derivation.as_bytes(),
@@ -414,6 +433,32 @@ fn gateway_session(
             );
         } else {
             assert_eq!(result.unwrap().outcome, BuildOutcome::Built);
+            if fixed {
+                use telchar::shared_build::recovery::SharedBuildOutputStore;
+                let mut recovery =
+                    telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(
+                        endpoint.clone(),
+                    );
+                recovery.validate_outputs(&request).unwrap();
+                let digest = Sha256::digest(b"microvm-output".repeat(8192))
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                let conflicting = derivation.replace(&digest, &"0".repeat(64));
+                let conflicting = telchar::build::BuildRequest::from_stored_derivation(
+                    drv.as_bytes(),
+                    conflicting.as_bytes(),
+                    &[telchar::backend::BackendTarget::new(
+                        "fixture",
+                        telchar::backend::BackendKind::Local,
+                        "aarch64-linux",
+                        [] as [&str; 0],
+                    )
+                    .unwrap()],
+                )
+                .unwrap();
+                assert!(recovery.validate_outputs(&conflicting).is_err());
+            }
         }
         assert_eq!(logs, b"building\n");
         worker.join().unwrap();

@@ -626,15 +626,58 @@ pub fn validate_store_output_content(
         "gateway output NAR validated"
     );
     let metadata = verified.metadata;
-    if metadata.content_address.as_deref() == expected {
-        return Ok(metadata);
+    validate_content_address(
+        metadata.content_address.as_deref(),
+        expected,
+        metadata.nar_hash,
+        contents,
+    )?;
+    Ok(metadata)
+}
+
+pub fn validate_output_nar(
+    source: impl Read,
+    nar_hash: [u8; 32],
+    nar_size: u64,
+    actual: Option<&str>,
+    expected: Option<&str>,
+) -> io::Result<()> {
+    let flat = actual.is_none() && expected.is_some_and(|value| value.starts_with("fixed:sha256:"));
+    let (fingerprint, contents) = if flat {
+        crate::store::nar::hash_regular_nar(source, io::sink())
+            .map(|(nar, hash)| (nar, Some(hash)))?
+    } else {
+        (stage_nar(source, io::sink())?, None)
+    };
+    if fingerprint.sha256 != nar_hash {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "NAR hash mismatch",
+        ));
     }
-    if metadata.content_address.is_none() {
+    if fingerprint.size != nar_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "NAR size mismatch",
+        ));
+    }
+    validate_content_address(actual, expected, nar_hash, contents)
+}
+
+fn validate_content_address(
+    actual: Option<&str>,
+    expected: Option<&str>,
+    nar_hash: [u8; 32],
+    contents: Option<[u8; 32]>,
+) -> io::Result<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    if actual.is_none() {
         let hash = match expected {
-            Some(address) if address.starts_with("fixed:r:sha256:") => Some((
-                address.trim_start_matches("fixed:r:sha256:"),
-                metadata.nar_hash,
-            )),
+            Some(address) if address.starts_with("fixed:r:sha256:") => {
+                Some((address.trim_start_matches("fixed:r:sha256:"), nar_hash))
+            }
             Some(address) if address.starts_with("fixed:sha256:") => {
                 contents.map(|hash| (address.trim_start_matches("fixed:sha256:"), hash))
             }
@@ -643,7 +686,7 @@ pub fn validate_store_output_content(
         if hash
             .is_some_and(|(expected, actual)| expected == crate::build::encode_nix_base32(&actual))
         {
-            return Ok(metadata);
+            return Ok(());
         }
     }
     Err(io::Error::new(
@@ -852,7 +895,7 @@ fn configure_child_lifecycle(command: &mut std::process::Command) {
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 fn configure_child_lifecycle(_command: &mut std::process::Command) {}
 
-fn parse_sha256_hex(value: &str) -> io::Result<[u8; 32]> {
+pub(crate) fn parse_sha256_hex(value: &str) -> io::Result<[u8; 32]> {
     if value.len() != 64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

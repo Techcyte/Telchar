@@ -179,18 +179,11 @@ impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
         for authority in request.output_authorities() {
             let path = std::str::from_utf8(authority.path())
                 .map_err(|_| io::Error::other("recovered output path is invalid"))?;
-            let metadata = crate::store::export::validate_store_output(
+            crate::store::export::validate_store_output_content(
                 std::path::Path::new(path),
+                authority.expected_content_address().as_deref(),
                 &mut export,
             )?;
-            if metadata.content_address.as_deref()
-                != authority.expected_content_address().as_deref()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "recovered output content address mismatch",
-                ));
-            }
         }
         Ok(())
     }
