@@ -97,10 +97,18 @@ const SYSTEM_SSH_PROGRAM: &str = "/usr/bin/ssh";
 const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROGRAM");
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct HistoryRetention {
+    pub retention: Duration,
+    pub maximum_builds: usize,
+    pub destination: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
     lifecycle_detail_retention: Duration,
+    history_retention: Option<HistoryRetention>,
     maximum_retained_input_bytes: u64,
     audit_enabled: bool,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
@@ -159,6 +167,10 @@ impl ServiceConfig {
 
     pub fn lifecycle_detail_retention(&self) -> Duration {
         self.lifecycle_detail_retention
+    }
+
+    pub fn history_retention(&self) -> Option<&HistoryRetention> {
+        self.history_retention.as_ref()
     }
 
     pub fn maximum_retained_input_bytes(&self) -> u64 {
@@ -262,6 +274,7 @@ impl ServiceConfig {
         if self.running_disconnect_policy != replacement.running_disconnect_policy
             || self.output_retention != replacement.output_retention
             || self.lifecycle_detail_retention != replacement.lifecycle_detail_retention
+            || self.history_retention != replacement.history_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.audit_enabled != replacement.audit_enabled
             || self.post_build_hook != replacement.post_build_hook
@@ -383,6 +396,27 @@ impl ServiceConfig {
         }
         let lifecycle_detail_retention =
             Duration::from_secs(lifecycle_detail_retention_days * 86400);
+        let history_retention = raw
+            .history_retention
+            .map(|section| {
+                let maximum_builds = section.maximum_builds.unwrap_or(16);
+                if !(1..=3650).contains(&section.retention_days)
+                    || !(1..=256).contains(&maximum_builds)
+                    || section.discard == section.destination.is_some()
+                    || section
+                        .destination
+                        .as_ref()
+                        .is_some_and(|path| !path.is_absolute())
+                {
+                    return Err(invalid("history retention policy is invalid"));
+                }
+                Ok(HistoryRetention {
+                    retention: Duration::from_secs(section.retention_days * 86400),
+                    maximum_builds,
+                    destination: section.destination,
+                })
+            })
+            .transpose()?;
         let maximum_retained_input_bytes =
             match environment_string(environment, "TELCHAR_MAX_RETAINED_INPUT_BYTES")? {
                 Some(value) => parse_positive_u64(&value, "retained input byte limit is invalid")?,
@@ -532,6 +566,7 @@ impl ServiceConfig {
             running_disconnect_policy,
             output_retention,
             lifecycle_detail_retention,
+            history_retention,
             maximum_retained_input_bytes,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
             post_build_hook,

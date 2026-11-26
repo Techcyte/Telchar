@@ -774,10 +774,24 @@ fn run_daemon() -> io::Result<()> {
                     256,
                     &mut detail_cursor,
                 )
-                .map(|_| ())
-                .map_err(std::io::Error::other)
+                .map_err(std::io::Error::other)?;
+                Ok(())
             },
         )?;
+    let mut history_service = config.history_retention().cloned().map(|policy| {
+        let history_database = database.clone();
+        let mut cursor = telchar::persistence::HistoryCursor::default();
+        telchar::service::daemon_services::MaintenanceService::start_with_ownership(
+            maintenance_interval, Arc::clone(&singleton_ownership), move || {
+                if let Err(error) = telchar::service::archive::maintain_history(
+                    &history_database, Some(&policy), &mut cursor,
+                ) {
+                    tracing::warn!(event = "history.retention.failed", error_kind = ?error.kind(), "terminal history retention deferred");
+                }
+                Ok(())
+            },
+        )
+    }).transpose()?;
     let mut hook_delivery_service = telchar::service::daemon_services::HookDeliveryService::start(
         Arc::clone(&singleton_ownership),
         database.clone(),
@@ -979,6 +993,9 @@ fn run_daemon() -> io::Result<()> {
                 &mut recovery_services,
             )?;
             return Err(error);
+        }
+        if let Some(service) = history_service.as_mut() {
+            service.check()?;
         }
         if let Err(error) = maintenance_service.check() {
             tracing::error!(

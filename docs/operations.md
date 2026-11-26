@@ -205,6 +205,17 @@ Keep the GC-root directory on persistent storage. Monitor it together with the g
 
 A sweep uses a fixed database-time cutoff and process-local keyset cursors. Restart safely rescans eligibility. Cleanup faults can delay pruning; this policy is not a database-size ceiling or an archive. Back up immutable audit history and monitor its growth separately.
 
+Terminal build history retention is separately disabled unless `[history_retention]` is configured. Changes require daemon restart. For immutable filesystem JSONL archives:
+
+```toml
+[history_retention]
+retention_days = 90
+maximum_builds = 16
+destination = "/var/lib/telchar/history"
+```
+
+The destination must already exist and be accessible only to appropriate operators; history includes organizational identities, paths and result metadata. Alternatively set `discard = true` without `destination` to delete eligible history without archiving. Ages range from 1 through 3650 days; each maintenance pass considers at most `maximum_builds` (1 through 256). Live output-cache entries, request attachments/leases, unresolved executions and pending hook roots prevent deletion. Historical MicroVM references remain protected. Filesystem delivery synchronizes immutable content before deletion; revalidation preserves records changed during delivery. Storage failure emits `history.retention.failed` and defers deletion without failing builds. Oversized snapshots remain in PostgreSQL. Operator-owned filesystem lifecycle can remove archives; a recorded location is not a guarantee of perpetual availability.
+
 Nomad allocation stores are separate operator policy. See [Nomad backend](nomad.md).
 
 ## Ingress and clients
