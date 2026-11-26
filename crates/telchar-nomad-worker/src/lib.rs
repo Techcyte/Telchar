@@ -1,7 +1,6 @@
 //! Runs the allocation-side authenticated transfer session, resolves inputs, invokes Nix, and returns logs and outputs.
 
 mod callback_connection;
-pub mod microvm;
 
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -52,7 +51,6 @@ pub struct WorkerSession {
     transfer_chunk_bytes: usize,
     maximum_failure_message_bytes: usize,
     connection_deadline: Instant,
-    deadline_monitor: Option<microvm::SessionDeadline>,
 }
 
 impl WorkerSession {
@@ -159,17 +157,6 @@ impl WorkerSession {
             arguments: &specification.arguments,
             environment: &specification.environment,
         };
-        let _monitor = self
-            .deadline_monitor
-            .as_ref()
-            .map(|_| {
-                microvm::BuildMonitor::start(
-                    &self.socket,
-                    store.shutdown_handle()?,
-                    self.connection_deadline,
-                )
-            })
-            .transpose()?;
         let socket = &mut self.socket;
         let protocol = &mut self.protocol;
         let mut sequence = 0_u64;
@@ -1025,7 +1012,6 @@ pub fn receive_authenticated_manifest(
         inputs,
         transfer_chunk_bytes,
         maximum_failure_message_bytes: nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES,
-        deadline_monitor: None,
         connection_deadline: Instant::now()
             .checked_add(maximum_connection_lifetime)
             .ok_or_else(|| invalid("worker connection lifetime is invalid"))?,

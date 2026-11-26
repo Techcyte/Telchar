@@ -84,15 +84,6 @@ fn builtin_routing_preserves_features_priority_and_capacity() {
         "reserved"
     );
     assert!(select_backend(&targets, "builtin", &["missing"]).is_none());
-    let microvm = [BackendTarget::new(
-        "microvm",
-        BackendKind::Microvm,
-        "aarch64-linux",
-        [] as [&str; 0],
-    )
-    .unwrap()];
-    assert!(select_backend(&microvm, "builtin", &[]).is_none());
-    assert!(select_backend(&microvm, "aarch64-linux", &[]).is_some());
     let pool = BackendPool::new(targets, vec![1, 1, 1]).unwrap();
     let first = pool
         .acquire("builtin", &["kvm"], Duration::from_secs(1))
@@ -172,7 +163,7 @@ fn backend_pool_rejects_ambiguous_capacity_identity() {
             .unwrap(),
             BackendTarget::new(
                 "shared",
-                BackendKind::Microvm,
+                BackendKind::Nomad,
                 "aarch64-linux",
                 [] as [&str; 0],
             )

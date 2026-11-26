@@ -133,9 +133,9 @@ fn worker_rejects_untrusted_callback_without_panicking() {
         .expect("protocol versions")
         .with_no_client_auth()
         .with_single_cert(
-            vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
+            vec![include_bytes!("fixtures/callback-cert.der").to_vec().into()],
             rustls::pki_types::PrivateKeyDer::Pkcs8(
-                include_bytes!("fixtures/microvm-key.der").to_vec().into(),
+                include_bytes!("fixtures/callback-key.der").to_vec().into(),
             ),
         )
         .expect("server certificate");
@@ -596,7 +596,7 @@ fn select_protocol(
 
 #[test]
 fn receives_manifest_on_execution_authenticated_connection() {
-    for microvm in [false, true] {
+    {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
         let endpoint = format!("ws://{}/fixture", listener.local_addr().expect("address"));
         let expected = manifest();
@@ -620,75 +620,16 @@ fn receives_manifest_on_execution_authenticated_connection() {
                 .expect("manifest sends");
         });
         let (socket, _) = tungstenite::connect(endpoint).expect("connection opens");
-        let session = if microvm {
-            telchar_nomad_worker::microvm::receive_session(
-                socket,
-                8 * 1024 * 1024,
-                262144,
-                std::time::Instant::now() + std::time::Duration::from_secs(60),
-            )
-        } else {
-            telchar_nomad_worker::receive_authenticated_manifest(
-                socket,
-                8 * 1024 * 1024,
-                262144,
-                std::time::Duration::from_secs(60),
-            )
-        }
+        let session = telchar_nomad_worker::receive_authenticated_manifest(
+            socket,
+            8 * 1024 * 1024,
+            262144,
+            std::time::Duration::from_secs(60),
+        )
         .expect("execution-authenticated session receives manifest without Nomad identity");
         assert_eq!(session.manifest(), &expected);
         server.join().expect("server joins");
     }
-}
-
-#[test]
-fn microvm_session_deadline_closes_transport_after_manifest() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
-    let address = listener.local_addr().expect("address");
-    let sent = manifest();
-    let server = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept");
-        let mut socket = tungstenite::accept(stream).expect("upgrade");
-        let mut body = Vec::new();
-        write_frame(
-            &mut body,
-            &Frame::new(
-                FrameKind::InputManifest,
-                encode_metadata(&sent, 8192).expect("manifest"),
-                vec![],
-            ),
-            ProtocolLimits::new(8192, 0),
-        )
-        .expect("frame");
-        socket
-            .send(tungstenite::Message::Binary(body.into()))
-            .expect("send");
-        socket
-            .get_mut()
-            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-            .expect("timeout");
-        match socket.read() {
-            Err(tungstenite::Error::Io(error)) => assert_ne!(
-                error.kind(),
-                std::io::ErrorKind::WouldBlock,
-                "deadline must close live session"
-            ),
-            Err(tungstenite::Error::Protocol(
-                tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-            )) => {}
-            other => panic!("expected deadline disconnect, got {other:?}"),
-        }
-    });
-    let (socket, _) = tungstenite::connect(format!("ws://{address}")).expect("connect");
-    let session = telchar_nomad_worker::microvm::receive_session(
-        socket,
-        8192,
-        4096,
-        std::time::Instant::now() + std::time::Duration::from_millis(200),
-    )
-    .expect("session");
-    server.join().expect("server");
-    drop(session);
 }
 
 #[test]

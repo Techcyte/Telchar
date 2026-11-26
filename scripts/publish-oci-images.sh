@@ -30,7 +30,6 @@ case "$system" in
     ;;
   aarch64-linux)
     specifications=(
-      'telchar-microvm-execution-oci:telchar-microvm-execution'
       'telchar-nomad-worker-oci:telchar-nomad-worker'
     )
     ;;

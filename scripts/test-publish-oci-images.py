@@ -44,7 +44,7 @@ class PublishOciImagesTest(unittest.TestCase):
         cases = [(system, tag) for system in ("x86_64-linux", "aarch64-linux")
                  for tag in ("main", self.release_version)]
         for system, tag in cases:
-            images = (["telchar-microvm-execution", "telchar-nomad-worker"] if system == "aarch64-linux" else
+            images = (["telchar-nomad-worker"] if system == "aarch64-linux" else
                       ["telchar", "telchar-nomad-worker", "telchar-nix-daemon", "telchar-ssh-ingress"])
             with self.subTest(system=system, tag=tag), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -58,7 +58,7 @@ class PublishOciImagesTest(unittest.TestCase):
                     "if sys.argv[1] == 'eval':\n"
                     "    print(os.environ['PACKAGE_VERSION'], end='')\n"
                     "elif sys.argv[1] == 'build':\n"
-                    "    print('/isolated/microvm.tar.gz')\n"
+                    "    print('/isolated/image.tar.gz')\n"
                     "elif 'login' in sys.argv:\n"
                     "    sys.stdin.read()\n"
                 )
@@ -82,7 +82,7 @@ class PublishOciImagesTest(unittest.TestCase):
                 self.assertEqual(
                     [command for command in commands if "copy" in command],
                     [["develop", "--command", "skopeo", "copy",
-                      "docker-archive:/isolated/microvm.tar.gz",
+                      "docker-archive:/isolated/image.tar.gz",
                       f"docker://ghcr.io/techcyte/{image}:{tag}" +
                       ("-arm64" if system == "aarch64-linux" and image == "telchar-nomad-worker" else "")]
                      for image in images],

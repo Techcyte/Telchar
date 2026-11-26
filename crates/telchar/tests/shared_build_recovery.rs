@@ -245,60 +245,6 @@ fn recovery_traverses_monitoring_records_beyond_first_page() {
 }
 
 #[test]
-fn microvm_restart_uses_gateway_outputs_without_adoption() {
-    for available in [false, true] {
-        let fixture = PostgresFixture::start();
-        telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
-        let database = telchar::persistence::Database::connect(fixture.url()).expect("connects");
-        let kind = BackendKind::Microvm;
-        let request = recovery_request();
-        telchar::persistence::claim_shared_build_with_request(
-            &database,
-            DERIVATION,
-            &request.shared_build_digest(),
-            "arm",
-            kind,
-            kind.capabilities(),
-            None,
-            &[OUTPUT],
-            &request,
-        )
-        .expect("MicroVM build claims");
-        telchar::persistence::start_shared_build(&database, DERIVATION).expect("attempt starts");
-        let mut outputs = OutputStore::default();
-        if available {
-            outputs.valid.insert(OUTPUT.to_owned());
-        }
-        let mut backends = Backends {
-            capabilities: BTreeMap::from([("arm".to_owned(), (kind, kind.capabilities()))]),
-            ..Backends::default()
-        };
-        let outcome = reconcile_active_shared_builds(
-            &database,
-            Duration::from_secs(3600),
-            &mut outputs,
-            &mut backends,
-        )
-        .expect("recovery succeeds");
-        assert_eq!(outcome.succeeded, usize::from(available));
-        assert_eq!(outcome.failed, usize::from(!available));
-        assert_eq!(outcome.monitoring, 0);
-        assert!(backends.adopted.is_empty());
-        let build = telchar::persistence::read_shared_build(&database, DERIVATION)
-            .expect("build reads")
-            .expect("build exists");
-        assert_eq!(
-            build.state,
-            if available {
-                SharedBuildState::Succeeded
-            } else {
-                SharedBuildState::Failed
-            }
-        );
-    }
-}
-
-#[test]
 fn invalid_registered_outputs_cannot_become_recovered_success() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).unwrap();

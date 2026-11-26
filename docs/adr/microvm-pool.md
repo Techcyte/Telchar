@@ -1,5 +1,7 @@
 # Demand-driven MicroVM workers and per-build stores
 
+> Retired feature: historical design and evidence, not a supported backend.
+
 ## Outcome
 
 A bounded MicroVM pool reuses local inputs across sequential derivations. Workers

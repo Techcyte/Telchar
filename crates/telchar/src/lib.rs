@@ -3,7 +3,6 @@
 pub mod backend;
 pub mod build;
 pub mod fixture;
-pub mod microvm;
 pub mod nomad;
 pub mod persistence;
 pub mod service;

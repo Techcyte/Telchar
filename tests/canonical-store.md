@@ -63,5 +63,5 @@ sandbox security. Host daemon configuration and trust are unchanged.
 The runner stops its daemon when the command exits and preserves the fixture on
 success or failure for inspection. Resource containment belongs to the invoking
 test environment; the runner does not install cgroup limits. Commands must not
-leave background workloads behind. The existing MicroVM root-mapped helper has a
-separate execution contract and is not replaced by this nonroot command runner.
+leave background workloads behind. Worker callback contracts use the separate
+root-mapped `tests/worker-store.sh` fixture rather than this nonroot command runner.

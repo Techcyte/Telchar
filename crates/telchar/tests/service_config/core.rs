@@ -5,6 +5,22 @@ use std::time::Duration;
 use super::*;
 
 #[test]
+fn rejects_unsupported_execution_backends() {
+    let mut environment = Environment::default();
+    let root = fixture_root("unsupported-backend");
+    let config = root.join("telchar.toml");
+    environment.set("TELCHAR_CONFIG", &config);
+    for contents in [
+        "[[backends.microvm]]\nname = \"arm\"\n",
+        "[backends]\nmicrovm_bind = \"127.0.0.1:8443\"\n",
+    ] {
+        fs::write(&config, contents).unwrap();
+        assert!(load(&environment).is_err(), "unsupported backend accepted");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn upload_audit_is_optional_and_strict() {
     let mut environment = Environment::default();
     let root = fixture_root("upload-audit");

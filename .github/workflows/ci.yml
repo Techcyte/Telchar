@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  microvm:
-    name: ARM64 MicroVM image
+  arm-worker:
+    name: ARM64 Nomad worker image
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 60
@@ -57,17 +57,12 @@ jobs:
       - name: Allow test namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Test MicroVM runtime trust and lifecycle
-        run: |
-          nix develop -c unshare --user --map-root-user \
-            --mount --pid --fork --mount-proc \
-            python3 -m unittest discover -s tests/microvm -p test_hook.py -v
-          nix develop -c python3 tests/microvm/test_image_readiness.py
+      - name: Build ARM64 Nomad worker image
+        run: >-
+          nix build -L --no-link
+          .#packages.aarch64-linux.telchar-nomad-worker-oci
 
-      - name: Build MicroVM image contract
-        run: nix build -L --no-link .#checks.aarch64-linux.oci-images
-
-      - name: Scan MicroVM image
+      - name: Scan ARM64 Nomad worker image
         env:
           IMAGE_SYSTEM: aarch64-linux
         run: scripts/check-oci-images.sh
@@ -235,9 +230,6 @@ jobs:
 
       - name: Check VM acceleration
         run: test -r /dev/kvm && test -w /dev/kvm
-
-      - name: Build configured MicroVM service contract
-        run: nix build --no-link .#checks.x86_64-linux.nixos-microvm-service
 
       - name: Publish main images
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

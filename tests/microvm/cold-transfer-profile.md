@@ -1,5 +1,8 @@
 # Bounded connected cold-transfer profile
 
+> Historical evidence for retired MicroVM support. Commands and source paths
+> below describe that qualification revision, not current executable interfaces.
+
 Measurement/diagnosis only: no production optimization. Measured 2026-11-05 on
 local x86_64 Linux, debug Rust builds, starting at `1e2c8602` (clean empty child
 `0d176ae1`). Real production gateway session, Rust worker, TLS, Nix import/build,

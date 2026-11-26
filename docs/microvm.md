@@ -1,5 +1,8 @@
 # Lambda MicroVM backend
 
+> Historical implementation and qualification record. MicroVM execution is not a
+> supported Telchar backend; commands and source paths below are not current APIs.
+
 **MicroVM integration is experimental, not production-ready.** The gateway
 assigns one ARM64 derivation at a time to a worker, validates outputs in its own
 store, and retains durable cleanup obligations. Output-only recovery never adopts

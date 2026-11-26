@@ -209,62 +209,6 @@ after receiving a matching accepted gateway receipt. Rejected, incomplete, or
 unacknowledged transfers do not contribute. Receipt acceptance is not itself the
 durable terminal build result.
 
-## Dedicated MicroVM worker
-
-The dedicated worker exports `telchar.microvm.worker.duration` in seconds with
-`outcome=success|failure`. `telchar.microvm.worker.phase.duration` adds bounded
-`phase`: `connect`, `manifest`, `resolve-inputs`, `import-inputs`, `build`,
-`report-failure`, or `return-outputs`. Build duration excludes output return;
-it is not a compiler-only measurement.
-
-`telchar.microvm.worker.deadline` counts failed primary operations observed at or
-after the absolute execution cutoff, with `outcome=expired`. Failure reporting
-does not count again. This observation does not establish that expiry caused the
-error; transport errors can race the cutoff. Enforcement remains the absolute
-session/build deadlines, independent of telemetry export.
-
-## MicroVM lifecycle
-
-All instruments below carry only bounded `outcome`; no intent, provider, account,
-region, path or credential labels are emitted.
-
-| Instrument | Kind | Unit | Outcomes and meaning |
-| --- | --- | --- | --- |
-| `telchar.microvm.launches` | counter | `{launch}` | `acknowledged` / `unknown` provider-call responses. |
-| `telchar.microvm.launch.duration` | histogram | `s` | Provider-call duration, excluding pre-dispatch rejection. |
-| `telchar.microvm.admissions` | counter | `{connection}` | `accepted` / `rejected` / `capacity` callback admission outcomes. |
-| `telchar.microvm.admission.rejections` | counter | `{connection}` | Bounded rejection stage: `ownership`, `protocol`, `bootstrap`, `authentication`, `capacity`, `binding`, `deadline`, or `internal`. |
-| `telchar.microvm.admission.duration` | histogram | `s` | Admission duration; capacity rejection records zero. |
-| `telchar.microvm.rendezvous` | counter | `{connection}` | `connected` / `error` execution-side callback waits. |
-| `telchar.microvm.rendezvous.duration` | histogram | `s` | Wait after acknowledged dispatch; failed launches never enter this wait. |
-| `telchar.microvm.cleanup.attempts` | counter | `{attempt}` | `released` / `unchanged` / `error` cleanup API results. |
-| `telchar.microvm.cleanup.duration` | histogram | `s` | Cleanup API duration. |
-| `telchar.microvm.obligations` | histogram | `{obligation}` | Retained count sampled per account/region scan, split `identified` / `unidentified`. |
-| `telchar.microvm.obligation.age` | histogram | `s` | Oldest retained reservation age per scan/category; zero when empty. |
-
-Rejection stages identify the operation that failed, not a forensic verdict.
-For example, a socket deadline during upgrade belongs to `protocol`; `deadline`
-identifies the explicit admission cutoff check after bootstrap. Authentication
-covers capability lookup before backend admission; `binding` includes exact
-provider/single-use admission and waiting-peer checks. No peer-supplied diagnostic
-or credential becomes a label. These stages do not classify later delivery races
-between an admitted connection and its execution receiver.
-
-Launch acknowledgment and callback connection do not prove build success.
-Cleanup `unchanged` includes both unresolved observations and already-resolved
-no-ops. Only exact provider termination observation establishes cleanup release.
-Retained obligations include unreleased reservations and identified instances
-without observed termination, even when capacity was independently released.
-`unidentified` includes reservations without provider identity, not exclusively
-quarantined launches.
-
-Obligation histograms aggregate repeated scan observations, including scans made
-by callers outside maintenance. They are not current fleet gauges; do not sum
-samples to estimate outstanding instances. Age starts at reservation creation,
-not at cleanup eligibility, and can include active builds. Accounts and regions
-share histogram series deliberately. These instruments do not replace durable
-operator reports for exact obligation inventory.
-
 ## Streaming I/O attribution
 
 `telchar.transfer.io.duration` is a histogram in seconds;
@@ -353,40 +297,11 @@ trace and must be measured in CI if total job latency matters.
 ## Connected build traces
 
 The gateway's `backend.execution` context parents the real Nomad
-`worker.execution` or `microvm.worker.execution`. Each worker exports real child
-phase spans (`worker.phase` / `microvm.worker.phase`, bounded `phase` and
+`worker.execution`. Each worker exports real child
+phase spans (`worker.phase`, bounded `phase` and
 `outcome` attributes) as well as the duration histograms above. Configuration
 before the Nomad carrier is parsed remains a local startup trace. Nomad's
 manifest phase parents the authenticated gateway `nomad.callback.execution`
 round trip; gateway input export, build-and-collect and output collection have
 separate spans. Do not infer cross-host ordering from wall-clock timestamps.
 
-MicroVM cold launches and warm assignments carry a fresh bounded W3C context in
-the strict hook/protected binding. `trace_context`, including its nullable
-`traceparent` and `tracestate` members, is required even when tracing is off.
-Gateway, hook and worker must be upgraded together; the old payload schema is
-not accepted. Trace metadata never replaces capability, epoch, exact provider
-identity, request digest or singleton-ownership checks.
-
-`microvm.gateway.session`, `microvm.gateway.export_inputs`,
-`microvm.gateway.build_and_collect` and `microvm.gateway.collect_outputs` expose
-transfer and registration cost. A fixed ten `microvm.authority.summary` events
-per session report numeric `count`, `total_ms`, and `maximum_ms` for `load`,
-`ownership`, `request_connection`, `request_query`, and
-`request_decode_validate`, separately for `transfer` and `monitor`. These are
-per-assignment aggregates, not per-chunk spans. Ownership includes its database
-checkout and fencing query; request connection includes pool wait and connection
-validation (not individually partitioned). Decode includes JSON, execution
-validation and digest checking. Load includes retries/ownership uncertainty.
-Stages nest, and monitor and transfer run concurrently: `overlapping_intervals`
-is true, and summed totals are **not** build wall time.
-
-`microvm.gateway.reset_confirmation` measures the gateway's validate request
-through the exact runtime reset report and durable idle transition, including
-provider/network time. Its parent is the completed attempt's retained context
-when available; `confirmed` means the exact report was observed, not that the
-idle transition necessarily succeeded. It is not Python-local reset duration or
-the entire build-result-to-reset latency. Telemetry retention/export failure does
-not grant authority or change build success. Trace and assignment IDs are never
-metric labels. New timing fields contain no credentials, request bodies or store
-paths; existing product log events retain their existing diagnostics policy.

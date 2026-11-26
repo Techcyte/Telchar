@@ -1,5 +1,8 @@
 # Local connected reuse result (2026-11-05)
 
+> Historical evidence for retired MicroVM support. Commands and source paths
+> below describe that qualification revision, not current executable interfaces.
+
 Command and measurement definitions: [connected-reuse.md](connected-reuse.md).
 Default workload: 32 MiB kernel-random shared input, three fresh-worker cold jobs,
 one excluded seed followed by three persistent-worker warm jobs. Each job hashes

@@ -45,14 +45,8 @@
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar-nomad-worker/tests/fixtures/" pathString
           || pathString == "${toString ./.}/tests/canonical-store.sh"
           || pathString == "${toString ./.}/tests/workspace.sh"
-          || pathString == "${toString ./.}/tests/microvm"
-          || (
-            pkgs.lib.hasPrefix "${toString ./.}/tests/microvm/" pathString
-            && (pkgs.lib.hasSuffix ".py" pathString || pkgs.lib.hasSuffix ".sh" pathString)
-          )
+          || pathString == "${toString ./.}/tests/worker-store.sh"
           || pathString == "${toString ./.}/deploy"
-          || pathString == "${toString ./.}/deploy/microvm"
-          || pkgs.lib.hasPrefix "${toString ./.}/deploy/microvm/" pathString
           || pathString == sshDeployment
           || pkgs.lib.hasPrefix "${sshDeployment}/" pathString
           || pathString == "${toString ./.}/deny.toml"
@@ -72,10 +66,6 @@
 
       lib = {
         sshForcedCommand = import ./nix/ssh-forced-command.nix;
-        microvmAwsContext = import ./nix/microvm-aws-context.nix {
-          pkgs = armPkgs;
-          worker = self.packages.aarch64-linux.telchar-nomad-worker;
-        };
       };
 
       packages.aarch64-linux = {
@@ -88,16 +78,6 @@
           telchar-nomad-worker
           telchar-nomad-worker-oci
           ;
-        telchar-microvm-execution-oci = import ./nix/microvm-execution.nix {
-          pkgs = armPkgs;
-          worker = self.packages.aarch64-linux.telchar-nomad-worker;
-        };
-      };
-
-      checks.aarch64-linux.oci-images = import ./nix/tests/microvm-image.nix {
-        pkgs = armPkgs;
-        worker = self.packages.aarch64-linux.telchar-nomad-worker;
-        image = self.packages.aarch64-linux.telchar-microvm-execution-oci;
       };
 
       packages.${system} = import ./nix/packages.nix {

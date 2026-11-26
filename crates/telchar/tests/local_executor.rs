@@ -445,11 +445,11 @@ fn executor_times_out_and_reaps_the_helper() {
 #[test]
 fn gateway_log_failure_releases_saturated_worker() {
     let _guard = HELPER_PROCESSES.lock().unwrap();
-    let Ok(store_uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+    let Ok(store_uri) = std::env::var("TELCHAR_WORKER_TEST_STORE_URI") else {
         let status = std::process::Command::new("bash")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/microvm/canonical-store.sh"
+                "/../../tests/worker-store.sh"
             ))
             .arg(std::env::current_exe().expect("test executable resolves"))
             .args([

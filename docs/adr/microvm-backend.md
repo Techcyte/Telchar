@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental design reference, not a production-readiness claim. The
+Retired feature. Historical design reference, not a supported backend or a production-readiness claim. The
 [operator guide](../microvm.md) describes implemented interfaces and qualification
 limits. Launch ambiguity, output-only recovery and residual snapshot risk have
 the explicit limits recorded below; this document grants no deployment authority.
