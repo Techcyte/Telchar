@@ -42,6 +42,7 @@ pub use connection::{
 };
 pub(crate) use connection::{connect, validate as validate_connection};
 mod executor;
+mod history;
 mod leases;
 mod migrations;
 mod sessions;
@@ -52,6 +53,7 @@ pub use attachments::*;
 pub use build_requests::*;
 pub use callback_nonces::*;
 pub use executor::*;
+pub use history::*;
 pub use leases::*;
 pub use migrations::*;
 pub use post_build_hooks::*;
