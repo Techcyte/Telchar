@@ -245,7 +245,7 @@ pub fn publish_inventory(
         gateway_store,
         local_build_helper,
     )?;
-    let replacement = replacement.retain_microvm_services(config, &backends.snapshot())?;
+    let replacement = replacement.retain_runtime_state(config, &backends.snapshot())?;
     backends.disable_static_ssh_not_in(&desired);
     backends.replace(replacement);
     Ok(())

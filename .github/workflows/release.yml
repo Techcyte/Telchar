@@ -75,12 +75,12 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           tag="v$RELEASE_VERSION"
-          notes=$(printf 'OCI images:\n- ghcr.io/techcyte/telchar:%s\n- ghcr.io/techcyte/telchar-nomad-worker:%s\n- ghcr.io/techcyte/telchar-microvm-execution:%s\n- ghcr.io/techcyte/telchar-nix-daemon:%s\n- ghcr.io/techcyte/telchar-ssh-ingress:%s' \
-            "$RELEASE_VERSION" \
-            "$RELEASE_VERSION" \
-            "$RELEASE_VERSION" \
-            "$RELEASE_VERSION" \
-            "$RELEASE_VERSION")
+          notes=$(printf '%s\n' 'OCI images:'; \
+            printf -- '- ghcr.io/techcyte/%s:%s\n' \
+              telchar "$RELEASE_VERSION" \
+              telchar-nomad-worker "$RELEASE_VERSION" \
+              telchar-nix-daemon "$RELEASE_VERSION" \
+              telchar-ssh-ingress "$RELEASE_VERSION")
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
             --title "$tag" \
@@ -95,8 +95,8 @@ jobs:
           IMAGE_TAG: ${{ inputs.version }}
         run: scripts/publish-oci-images.sh
 
-  microvm:
-    name: Publish ARM64 MicroVM and Nomad worker images
+  arm-worker:
+    name: Publish ARM64 Nomad worker image
     permissions:
       contents: read
       packages: write
@@ -133,8 +133,10 @@ jobs:
       - name: Allow test namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Build MicroVM image contract
-        run: nix build -L --no-link .#checks.aarch64-linux.oci-images
+      - name: Build ARM64 Nomad worker image
+        run: >-
+          nix build -L --no-link
+          .#packages.aarch64-linux.telchar-nomad-worker-oci
 
       - name: Scan ARM64 images
         env:
@@ -153,7 +155,7 @@ jobs:
     name: Publish GitHub release
     permissions:
       contents: write
-    needs: [publish, microvm]
+    needs: [publish, arm-worker]
     runs-on: ubuntu-26.04
     steps:
       - name: Publish GitHub release

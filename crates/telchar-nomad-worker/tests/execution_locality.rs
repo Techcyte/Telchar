@@ -199,11 +199,11 @@ fn select_protocol(
     Ok(response)
 }
 
-fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
-    worker_build_result(build, uri, microvm, None);
+fn worker_build(build: BuildSpecification, uri: &str) {
+    worker_build_result(build, uri, None);
 }
 
-fn worker_build_result(build: BuildSpecification, uri: &str, microvm: bool, failure: Option<&str>) {
+fn worker_build_result(build: BuildSpecification, uri: &str, failure: Option<&str>) {
     let endpoint = GatewayStoreEndpoint::parse(uri).unwrap();
     let info = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint)
         .unwrap()
@@ -332,18 +332,7 @@ fn worker_build_result(build: BuildSpecification, uri: &str, microvm: bool, fail
     ]);
     let config =
         WorkerConfig::from_lookup(|name| values.get(name).map(|value| value.to_string())).unwrap();
-    let mut session = if microvm {
-        let socket = telchar_nomad_worker::connect(&config).unwrap();
-        telchar_nomad_worker::microvm::receive_session(
-            socket,
-            config.maximum_manifest_bytes(),
-            config.transfer_chunk_bytes(),
-            Instant::now() + Duration::from_secs(30),
-        )
-        .unwrap()
-    } else {
-        receive_manifest(&config).unwrap()
-    };
+    let mut session = receive_manifest(&config).unwrap();
     session.resolve_inputs(uri).unwrap();
     match (session.build(uri), failure) {
         (Ok(result), _) => session.return_outputs(uri, &result).unwrap(),
@@ -514,7 +503,7 @@ fn builtin_fetch_executes_on_worker_daemon_and_returns_only_verified_outputs() {
         );
         assert_eq!(BuildSpecification::from(&request), build);
         let output = PathBuf::from(String::from_utf8(build.outputs[0].path.clone()).unwrap());
-        worker_build_result(build, &uri, false, failure);
+        worker_build_result(build, &uri, failure);
         let mut store = telchar::store::daemon::GatewayStoreConnection::connect(
             &GatewayStoreEndpoint::parse(&uri).unwrap(),
         )
@@ -631,7 +620,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
     let endpoint = GatewayStoreEndpoint::parse(&uri).unwrap();
     ordinary_build(&instantiate("ordinary-before"), &socket);
     assert_eq!(fs::read_to_string(&marker).unwrap(), "attempt\n");
-    for backend in ["local", "ssh", "worker", "microvm"] {
+    for backend in ["local", "ssh", "worker"] {
         let build = instantiate(backend);
         let output = PathBuf::from(String::from_utf8(build.outputs[0].path.clone()).unwrap());
         assert!(!output.exists());
@@ -685,7 +674,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
                     String::from_utf8_lossy(&logs)
                 );
             }
-            "worker" | "microvm" => worker_build(build, &uri, backend == "microvm"),
+            "worker" => worker_build(build, &uri),
             _ => unreachable!(),
         }
         assert_eq!(fs::read(output).unwrap(), b"terminal");
@@ -695,7 +684,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
             "{backend} delegated"
         );
     }
-    for backend in ["local", "ssh", "worker", "microvm"] {
+    for backend in ["local", "ssh", "worker"] {
         let name = format!("{backend}-exit-three");
         let build = instantiate_expression(
             &name,
@@ -703,8 +692,8 @@ print('# decline-permanently', file=sys.stderr, flush=True)
                 r#"derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo telchar-exit-three >&2; exit 3" ]; }}"#,
             ),
         );
-        if matches!(backend, "worker" | "microvm") {
-            worker_build_result(build, &uri, backend == "microvm", Some("exit code 3"));
+        if backend == "worker" {
+            worker_build_result(build, &uri, Some("exit code 3"));
             continue;
         }
         let kind = if backend == "local" {

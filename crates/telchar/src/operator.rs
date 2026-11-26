@@ -23,17 +23,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         Command::Backends => BackendReport::read(&config, &database(&config)?)?,
         Command::Recovery { limit } => RecoveryReport::read(&database(&config)?, limit)?,
-        Command::MicrovmAudit { limit } => serde_json::json!({
-            "resolutions": telchar::persistence::read_microvm_resolutions(&database(&config)?, limit)?
-        }),
-        Command::Microvm { limit } => serde_json::json!({
-            "obligations": telchar::persistence::read_microvm_obligations(&database(&config)?, limit)?,
-            "quota_debits": telchar::persistence::read_microvm_quota_debits(&database(&config)?, limit)?,
-            "quota_policies": config.microvm_backends().iter().map(|backend| serde_json::json!({
-                "backend": backend.name(), "account_id": backend.account_id(),
-                "region": backend.region(), "quota": backend.quota()
-            })).collect::<Vec<_>>()
-        }),
     };
     serde_json::to_writer(std::io::stdout().lock(), &value)?;
     println!();
@@ -53,8 +42,6 @@ enum Command {
     Build { derivation_path: String },
     Backends,
     Recovery { limit: usize },
-    Microvm { limit: usize },
-    MicrovmAudit { limit: usize },
     ConfigCheck,
 }
 
@@ -69,8 +56,6 @@ fn parse(mut arguments: impl Iterator<Item = String>) -> io::Result<Command> {
         "config-check" => no_more(arguments, Command::ConfigCheck),
         "queue" => bounded(arguments).map(|limit| Command::Queue { limit }),
         "recovery" => bounded(arguments).map(|limit| Command::Recovery { limit }),
-        "microvm" => bounded(arguments).map(|limit| Command::Microvm { limit }),
-        "microvm-audit" => bounded(arguments).map(|limit| Command::MicrovmAudit { limit }),
         _ => Err(invalid("unknown operator command")),
     }
 }

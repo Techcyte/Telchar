@@ -19,11 +19,10 @@ nix develop -c cargo deny check advisories licenses sources
 nix build --no-link .#telchar .#telchar-nomad-worker
 nix build --no-link .#checks.x86_64-linux.oci-images
 scripts/check-oci-images.sh
-nix build --no-link .#checks.aarch64-linux.oci-images
+nix build --no-link .#packages.aarch64-linux.telchar-nomad-worker-oci
 IMAGE_SYSTEM=aarch64-linux scripts/check-oci-images.sh
 nix build --no-link .#checks.x86_64-linux.nixos-oci-runtime
 nix build --no-link .#checks.x86_64-linux.nixos-module
-nix build --no-link .#checks.x86_64-linux.nixos-microvm-service
 nix build --no-link .#checks.x86_64-linux.nixos-remote-build-contract
 nix build --no-link .#checks.x86_64-linux.nixos-lix-local
 nix build --no-link .#checks.x86_64-linux.nixos-fixed-output-local

@@ -163,31 +163,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-sdk-lambdamicrovms"
-version = "1.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3b503ce6ce514071b4aaa517d6b05fda3784adf3f257a11bd533d3265babead"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
 name = "aws-sdk-sts"
 version = "1.128.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2599,8 +2574,6 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-ec2",
- "aws-sdk-lambdamicrovms",
- "aws-sdk-sts",
  "base64 0.23.1",
  "dtoa",
  "hmac",
@@ -2641,9 +2614,6 @@ dependencies = [
 name = "telchar-nomad-worker"
 version = "2026.11.7"
 dependencies = [
- "aws-credential-types",
- "aws-sdk-lambdamicrovms",
- "aws-sdk-sts",
  "base64 0.23.1",
  "hmac",
  "nix-worker-protocol",

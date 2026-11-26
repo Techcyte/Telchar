@@ -16,7 +16,7 @@ use telchar_telemetry::Telemetry;
 mod daemon_runtime;
 
 use daemon_runtime::{
-    MicrovmShutdown, SessionPermit, SocketGuard, prepare_socket_path, serve_accepted_connection,
+    SessionPermit, SocketGuard, prepare_socket_path, serve_accepted_connection,
     shutdown_daemon_services,
 };
 
@@ -555,53 +555,6 @@ fn run_daemon() -> io::Result<()> {
         result = "success",
         "released request roots reconciled"
     );
-    let cleanup_identities: Vec<_> = config
-        .microvm_backends()
-        .iter()
-        .map(|policy| (policy.account_id(), policy.region()))
-        .collect();
-    if !telchar::persistence::microvm_cleanup_is_configured(
-        singleton_ownership.database(),
-        &cleanup_identities,
-    )
-    .map_err(io::Error::other)?
-    {
-        return Err(invalid(
-            "MicroVM cleanup requires configured account and region",
-        ));
-    }
-    let deployments = (|| {
-        if config.microvm_backends().is_empty() {
-            return Ok(Vec::new());
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        runtime.block_on(async {
-            let mut deployments = Vec::new();
-            for policy in config.microvm_backends() {
-                deployments.push((policy.clone(), policy.provider().await?));
-            }
-            Ok::<_, io::Error>(deployments)
-        })
-    })()?;
-    singleton_ownership
-        .wait_for_authority()
-        .map_err(io::Error::other)?;
-    let microvm_services = match config.microvm_bind() {
-        Some(bind) => telchar::microvm::service::Service::start_many(
-            deployments,
-            Arc::clone(&singleton_ownership),
-            std::net::TcpListener::bind(bind)?,
-            gateway_store
-                .endpoint()
-                .cloned()
-                .ok_or_else(|| invalid("MicroVM requires a gateway store endpoint"))?,
-            object_admission.clone(),
-        )?,
-        None => Vec::new(),
-    };
-    let _microvm_shutdown = MicrovmShutdown(&microvm_services);
     let static_ssh_health =
         telchar::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
     let mut configured_backends = telchar::backend::routing::ConfiguredBackends::with_health(
@@ -612,8 +565,7 @@ fn run_daemon() -> io::Result<()> {
             .map(std::path::Path::to_path_buf),
         static_ssh_health.clone(),
     )?
-    .with_object_admission(object_admission.clone())
-    .attach_microvm_services(&config, microvm_services.clone())?;
+    .with_object_admission(object_admission.clone());
     configured_backends.restore_nomad_capacity(&database)?;
     let recovery_started = std::time::Instant::now();
     telchar::service::metrics::recovery_started("startup");
@@ -780,15 +732,6 @@ fn run_daemon() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let socket_guard = SocketGuard(socket);
-    let mut admin_service = std::env::var_os("TELCHAR_ADMIN_SOCKET")
-        .map(|path| {
-            daemon_runtime::AdminService::start(
-                PathBuf::from(path),
-                database.clone(),
-                microvm_services.clone(),
-            )
-        })
-        .transpose()?;
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
@@ -879,9 +822,6 @@ fn run_daemon() -> io::Result<()> {
                 }
             }
         }
-        if let Some(service) = admin_service.as_mut() {
-            service.check()?;
-        }
         hook_delivery_service.check()?;
         if let Some(service) = callback_service.as_mut() {
             service.check()?;
@@ -914,9 +854,6 @@ fn run_daemon() -> io::Result<()> {
                 );
                 return Err(invalid("singleton daemon ownership lost"));
             }
-        }
-        for service in &microvm_services {
-            service.check()?;
         }
         if reload_preparation.0.is_none()
             && static_ssh_health_service.can_replace()?

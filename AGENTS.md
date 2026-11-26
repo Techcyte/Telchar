@@ -17,7 +17,7 @@ For questions and reviews, stay read-only unless Travis requests changes. For im
 
 ## Repository map
 
-Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker`, `packages.aarch64-linux.telchar-microvm-execution-oci` and `lib.microvmAwsContext` provide the same-source ARM worker, OCI image and AWS context. MicroVM TLS uses the packaged standard CA bundle by default; private trust is an explicit runtime file override, never a deployment certificate baked into the image. AWS has no host bind-mount launch field; private-CA retrieval requires deployment bootstrap integration. `flake.lock` pins the tool and system-test dependencies.
+Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker` and `packages.aarch64-linux.telchar-nomad-worker-oci` provide the same-source ARM Nomad worker and OCI image. `flake.lock` pins the tool and system-test dependencies.
 
 | Location | Responsibility |
 | --- | --- |
@@ -126,12 +126,13 @@ Run available language-server diagnostics before builds. Inspect all test output
 
 Important distinctions:
 
+- Local-only qualification must pass `--builders ''` to outer `nix build` commands. Host Nix builder configuration can otherwise dispatch package or VM derivations to live Telchar infrastructure even when inner test stores are disposable. Verify selected builders in live output.
 - Full process/PostgreSQL integration authority is `checks.x86_64-linux.workspace-tests`. `nix/checks/workspace.nix` compiles once using cached Crane dependencies, restores the original Cargo source/target paths in a NixOS VM, then runs `tests/workspace.sh` as a nonroot NSS user. Packages (including doctests) retain separate execution groups, with four test threads per binary by default (`RUST_TEST_THREADS` overrides this). Environment-sensitive contracts use explicit configuration or exact-test subprocesses; never mutate the test process environment. The gateway's canonical-store boundary remains separate from worker-owned stores; see `tests/canonical-store.md`. A VM-capable Linux builder with KVM is required. `library-tests` remains a sandbox-compatible subset, not a replacement for the workspace check.
 - Run real-Nix/PostgreSQL fixtures as a non-root user with process/socket permissions. Helpers start isolated stores and databases; do not redirect them at production state. Nix fixtures also hold a cross-process lock; waiting on another test process is not necessarily a hung test. Do not bypass fixture locking to force parallelism.
 - Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests. Do not blanket-enable, add ignores, or remove tests to get green output.
 - VM checks require a VM-capable Nix builder and can be expensive. Pick checks from `nix/checks/nixos.nix` and its imported modules for the changed boundary.
 - Rust CI compilation, formatting, lint, release-tooling tests and full workspace integration results are Nix checks. The live security scan (`check-advisory-exceptions.py` and `cargo deny`) intentionally remains outside cached Nix results so advisory freshness and exception expiry are checked on each run.
-- CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts, including `nixos-microvm-service` with a simulated provider. Neither path provisions AWS resources. It is not synonymous with building every flake check.
+- CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts. Neither path provisions AWS resources. It is not synonymous with building every flake check.
 - Service boundary: `nix build --no-link .#checks.x86_64-linux.nixos-service-boundary`. Provider credential helper tests belong to telchar-gateway. Release tooling tests: `nix build -L --no-link .#checks.x86_64-linux.release-tooling`.
 
 ## Deployment and release pitfalls
@@ -141,7 +142,7 @@ Important distinctions:
 - `nixosModules.telchar`/`default` is the only service module. PostgreSQL provisioning, host trusted-user changes, retained GC-root directories, SSH ingress, and credential acquisition belong to the deployment. `lib.sshForcedCommand` exposes the authenticated stdio adapter. `examples/nixos/` contains explicit host and AWS/Vault compositions; none are public module exports. Deployment-owned tests live in telchar-gateway. Nomad backend token consumption/reload, submission, callbacks, and recovery remain product tests in Telchar.
 - SIGHUP supports transactional static SSH inventory changes and contents-only rotation of existing Nomad token files, not arbitrary configuration hot reload. Existing executions retain exact selected targets.
 - `telchar operator` is read-only, but not uniformly offline: `config-check` needs no database, other commands need an existing schema, and `backends` actively probes SSH/Nix readiness. Do not use daemon startup as an inspection command; it migrates and acquires ownership.
-- `nix/packages.nix` defines packages and four x86 OCI archives: gateway, Nix-daemon sidecar, Nomad worker, SSH ingress. `nix/microvm-execution.nix` defines the ARM64 microVM execution archive; native ARM CI/release jobs build, scan and publish it. Keep runtime UID/GID, credential and volume ownership, and frontend authorization aligned.
+- `nix/packages.nix` defines packages and four x86 OCI archives: gateway, Nix-daemon sidecar, Nomad worker, SSH ingress. Native ARM CI/release jobs build, scan and publish the ARM64 Nomad worker archive. Keep runtime UID/GID, credential and volume ownership, and frontend authorization aligned.
 - Versions use `YYYY.M.PATCH`. `scripts/prepare-release.py` coordinates the four crate manifests, workspace and fuzz lockfiles, and `nix/packages.nix`; do not bump only one authority. Hook delivery is manually approved and exact-version-only, with no moving `latest` tag. Do not publish or run version-changing release tooling for routine development.
 
 Keep this guide focused on stable boundaries and verified commands. Update it when those change; keep detailed designs, configuration examples, and compatibility matrices in their owning documents.

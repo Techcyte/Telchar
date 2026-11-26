@@ -1504,9 +1504,9 @@ mod tests {
 
     #[test]
     fn worker_output_receipt_verifies_missing_content_address() {
-        let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+        let Ok(uri) = std::env::var("TELCHAR_WORKER_TEST_STORE_URI") else {
             let output = std::process::Command::new("bash")
-                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/canonical-store.sh"))
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/worker-store.sh"))
                 .args([std::env::current_exe().unwrap().as_os_str(), std::ffi::OsStr::new("--exact"), std::ffi::OsStr::new("nomad::callback_service::tests::worker_output_receipt_verifies_missing_content_address")])
                 .output().unwrap();
             assert!(output.status.success(), "{output:?}");

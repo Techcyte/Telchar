@@ -8,60 +8,6 @@ use std::thread;
 use postgres::types::Type;
 use sha2::{Digest, Sha256};
 
-#[test]
-fn microvm_identity_survives_database_restart() {
-    let mut fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
-    let database =
-        telchar::persistence::Database::connect(fixture.url()).expect("database connects");
-    let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-microvm.drv";
-    telchar::persistence::claim_shared_build(
-        &database,
-        derivation,
-        &[1; 32],
-        "arm",
-        telchar::backend::BackendKind::Local,
-        telchar::backend::BackendKind::Local.capabilities(),
-        None,
-        &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-microvm"],
-    )
-    .expect("build claims");
-    telchar::persistence::start_shared_build(&database, derivation).expect("attempt starts");
-    drop(database);
-    let mut client = postgres::Client::connect(fixture.url(), postgres::NoTls).expect("connects");
-    client
-        .batch_execute(
-            "UPDATE shared_builds SET backend_kind = 'microvm', cancellation = 'explicit';
-         UPDATE shared_build_attempts SET backend_kind = 'microvm';",
-        )
-        .expect("MicroVM identity persists in both durable records");
-    drop(client);
-    fixture.restart();
-    let mut client = postgres::Client::connect(fixture.url(), postgres::NoTls).expect("reconnects");
-    let row = client
-        .query_one(
-            "SELECT b.backend_kind, a.backend_kind, b.execution_recovery, b.cancellation
-         FROM shared_builds b JOIN shared_build_attempts a USING (derivation_path)",
-            &[],
-        )
-        .expect("identity reads after restart");
-    assert_eq!(row.get::<_, String>(0), "microvm");
-    assert_eq!(row.get::<_, String>(1), "microvm");
-    assert_eq!(row.get::<_, String>(2), "output-only");
-    assert_eq!(row.get::<_, String>(3), "explicit");
-    let database =
-        telchar::persistence::Database::connect(fixture.url()).expect("database reconnects");
-    let build = telchar::persistence::read_shared_build(&database, derivation)
-        .expect("typed MicroVM build reads")
-        .expect("build exists");
-    let attempt = telchar::persistence::read_shared_build_attempt(&database, derivation)
-        .expect("typed MicroVM attempt reads")
-        .expect("attempt exists");
-    assert_eq!(build.backend_kind.as_str(), "microvm");
-    assert_eq!(attempt.backend_kind, build.backend_kind);
-    assert_eq!(build.capabilities, build.backend_kind.capabilities());
-}
-
 fn bounded_database(url: &str) -> telchar::persistence::Database {
     telchar::persistence::Database::connect(url)
         .expect("database configuration parses")

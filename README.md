@@ -150,15 +150,8 @@ For focused development, stock-client tests that require a shared canonical stor
 [isolated canonical-store command runner](tests/canonical-store.md), without
 using the host Nix daemon or changing its store registration.
 
-Gateway outputs target `x86_64-linux`. The microVM worker and execution image
-also have native `aarch64-linux` packages and image checks.
-
-> **Lambda MicroVM performance warning:** experimental and opt-in, not recommended
-> as the default for sustained Nix builds. An isolated AWS 32 MiB input pair took
-> 12.693 s cold versus 2.110 s warm (one sample each). Prefer persistent host-local
-> workers, such as Nomad on EC2/Spot, for sustained workloads; MicroVMs may suit
-> bursty demand or stronger VM isolation requirements. No automatic builder/worker
-> enrollment is enabled by this work. See [performance, use cases, and limitations](docs/microvm.md#performance-warning-and-recommended-use).
+Gateway outputs target `x86_64-linux`. The Nomad worker binary and OCI image
+also have native `aarch64-linux` packages.
 
 Useful packages:
 
@@ -173,15 +166,11 @@ Reproducible OCI image archives are also flake packages:
 nix build .#telchar-oci
 nix build .#telchar-nix-daemon-oci
 nix build .#telchar-nomad-worker-oci
-nix build .#packages.aarch64-linux.telchar-microvm-execution-oci
+nix build .#packages.aarch64-linux.telchar-nomad-worker-oci
 nix build .#telchar-ssh-ingress-oci
 ```
 
-OCI images are published as `ghcr.io/techcyte/telchar`, `telchar-nomad-worker`, `telchar-microvm-execution` (ARM64), `telchar-nix-daemon`, and `telchar-ssh-ingress`. Use an exact `YYYY.M.PATCH` tag for a release or `main` for the latest unreleased main-branch build.
-
-The microVM image uses standard CA certificates by default and supports an
-explicit runtime trust file for private PKI;
-see [microVM runtime packaging](docs/microvm.md#same-source-arm-worker-and-image-context).
+OCI images are published as `ghcr.io/techcyte/telchar`, `telchar-nomad-worker`, `telchar-nix-daemon`, and `telchar-ssh-ingress`. Use an exact `YYYY.M.PATCH` tag for a release or `main` for the latest unreleased main-branch build.
 
 The gateway and worker images are application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. See the [operator guide](docs/operations.md) for deployment requirements and the [Nomad guide](docs/nomad.md) for worker configuration.
 

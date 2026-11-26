@@ -93,11 +93,9 @@ needs those same locks. Keep that execution in a separate store domain.
 derivations against a real isolated Nix daemon, with an observable declining hook.
 It covers the local executor, static SSH submission using a simulated transport
 and real `nix-daemon --stdio`, and shared worker build logic using a fixture
-callback, including MicroVM session reception. Ordinary connections before and
-after retain their configured builders. The dedicated MicroVM worker suite also
-exercises configured daemon dispatch and output return through isolated stores
-and a simulated provider. This is execution-policy and fixture integration
-coverage, not live Nomad, native MicroVM isolation, or AWS qualification.
+callback. Ordinary connections before and after retain their configured builders.
+This is execution-policy and fixture integration coverage, not live Nomad or AWS
+qualification.
 
 ## Builtin fetch derivations
 
@@ -111,7 +109,7 @@ remain unchanged in shared-build identity, persistence and worker transfer.
 `builtin` is architecture-independent for backend selection; each selected
 backend retains its configured execution platform. Required and mandatory
 features, backend priority, readiness and capacity still govern eligibility.
-MicroVM backends are excluded from builtin selection. Nomad jobs retain the
+Nomad jobs retain the
 selected backend's operator-configured placement constraints; recovery metadata
 uses that backend's platform, not the derivation's `builtin` system. Telchar does not download the URL: the
 worker's Nix daemon dispatches the builtin and enforces its fixed-output hash.
@@ -147,10 +145,11 @@ execution, production callback transport, or the live Telchar deployment.
 
 ## Cascading gateways
 
-The cascading VM contract passes. Full workspace qualification remains pending:
-`microvm_ownership_recovery` reproducibly times out waiting for transfer
-interruption after ownership expiry in the workspace VM; its focused local run
-passes. Cascading support is not yet a completed release qualification.
+The cascading VM contract passes. Historical full-workspace qualification was
+blocked by a timeout in the retired `microvm_ownership_recovery` contract while
+waiting for transfer interruption after ownership expiry; its focused local run
+passed. That historical result does not establish full-workspace qualification
+for the current source revision.
 
 A Telchar static SSH backend may target another Telchar instance's restricted
 `serve-stdio` SSH ingress instead of a stock `nix-daemon --stdio` endpoint:
@@ -180,7 +179,7 @@ stores, and checks one durable attempt and terminal success at each gateway. A
 failing downstream derivation must return its diagnostic and fail at both
 gateways without registering an output. This is not evidence for Lix cascading,
 fixed-output cascading, longer chains, recovery across a broken inter-gateway
-connection, or cascades through Nomad/MicroVM workers.
+connection, or cascades through Nomad workers.
 
 Operators must keep the complete routing graph acyclic:
 

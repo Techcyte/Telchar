@@ -1,6 +1,16 @@
 //! Connected Nomad tracing: scheduler allocation API is simulated; rendered task Env,
 //! real worker process, authenticated callback, Nix build and gateway import are not.
-use super::*;
+use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
+
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/worker-store.sh");
 use std::io::{Read, Write};
 use std::time::Instant;
 use telchar::backend::{BackendKind, BackendTarget};
@@ -10,7 +20,7 @@ use telchar::nomad::backend::{
 use telchar::persistence as db;
 use telchar::service::config::ServiceConfig;
 
-const TEST: &str = "nomad_trace::rendered_environment_connects_real_worker_and_callback";
+const TEST: &str = "rendered_environment_connects_real_worker_and_callback";
 
 #[test]
 fn rendered_environment_connects_real_worker_and_callback() {
@@ -29,27 +39,27 @@ fn admitted_predecessor_failure_cannot_fail_successor() {
 
 fn connected_callback(failed_build: Option<bool>) {
     let stale = failed_build.is_some();
-    if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+    if std::env::var_os("TELCHAR_WORKER_TEST_STORE_URI").is_none() {
         let database = telchar_test_support::postgres::PostgresFixture::start();
         let collector = collector::start_collector();
         let status = Command::new("bash")
-            .env("MICROVM_TEST_DATABASE", database.url())
+            .env("TELCHAR_WORKER_TEST_DATABASE", database.url())
             .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
             .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
             .arg(FIXTURE)
             .args([
                 "/bin/sh",
                 "-c",
-                "export TELCHAR_GATEWAY_STORE_URI=\"$MICROVM_TEST_STORE_URI\" TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=\"$MICROVM_STORE_ROOT/hook_delivery-roots\"; exec \"$@\"",
+                "export TELCHAR_GATEWAY_STORE_URI=\"$TELCHAR_WORKER_TEST_STORE_URI\" TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=\"$TELCHAR_WORKER_STORE_ROOT/hook_delivery-roots\"; exec \"$@\"",
                 "hook-trace",
             ])
             .arg(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 match failed_build {
-                    Some(true) => "nomad_trace::admitted_predecessor_failure_cannot_fail_successor",
+                    Some(true) => "admitted_predecessor_failure_cannot_fail_successor",
                     Some(false) => {
-                        "nomad_trace::admitted_predecessor_output_cannot_complete_successor"
+                        "admitted_predecessor_output_cannot_complete_successor"
                     }
                     None => TEST,
                 },
@@ -149,8 +159,8 @@ fn connected_callback(failed_build: Option<bool>) {
         return;
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
-    let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
-    let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
+    let root = std::path::PathBuf::from(std::env::var_os("TELCHAR_WORKER_STORE_ROOT").unwrap());
+    let database = std::env::var("TELCHAR_WORKER_TEST_DATABASE").unwrap();
     db::migrate(&database).unwrap();
     let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let callback_address = callback.local_addr().unwrap();
@@ -159,7 +169,7 @@ fn connected_callback(failed_build: Option<bool>) {
     let secret = root.join("nomad-secret");
     std::fs::write(&secret, "private-nomad-trace-secret").unwrap();
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let store_uri = std::env::var("MICROVM_TEST_STORE_URI").unwrap();
+    let store_uri = std::env::var("TELCHAR_WORKER_TEST_STORE_URI").unwrap();
     // Stable operator-selected endpoint, resolved to the private worker daemon by
     // the fake raw_exec launcher; the rendered Env itself is consumed unchanged.
     let worker_socket = root.join("nomad-worker.sock");

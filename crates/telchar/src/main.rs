@@ -1,6 +1,5 @@
 //! Dispatches Telchar CLI commands to the binary runtime.
 
-mod admin;
 mod operator;
 mod runtime;
 
@@ -11,7 +10,6 @@ fn main() -> std::process::ExitCode {
         Some("validate-database-tls") => runtime::validate_database_tls(),
         Some("executor") => runtime::executor(),
         Some("operator") => operator::run(),
-        Some("admin") => admin::run(),
         _ => runtime::smoke(),
     };
     match result {

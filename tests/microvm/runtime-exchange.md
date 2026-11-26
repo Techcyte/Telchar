@@ -1,5 +1,8 @@
 # Native packaged runtime exchange
 
+> Historical evidence for retired MicroVM support. Commands and source paths
+> below describe that qualification revision, not current executable interfaces.
+
 `runtime-exchange.py` exercises a prepared ARM64 AWS root with its packaged Nix and dedicated worker. The gateway fixture uses real PostgreSQL, authenticated Unix IPC, TLS/WebSocket transport and isolated canonical stores; provider HTTP responses are simulated. This is not OpenSSH ingress, live AWS, OCI-builder equivalence or restored-snapshot qualification.
 
 ## Prerequisites

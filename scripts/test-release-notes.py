@@ -48,7 +48,6 @@ class ReleaseNotesTests(unittest.TestCase):
                 "OCI images:\n"
                 "- ghcr.io/techcyte/telchar:2026.9.1\n"
                 "- ghcr.io/techcyte/telchar-nomad-worker:2026.9.1\n"
-                "- ghcr.io/techcyte/telchar-microvm-execution:2026.9.1\n"
                 "- ghcr.io/techcyte/telchar-nix-daemon:2026.9.1\n"
                 "- ghcr.io/techcyte/telchar-ssh-ingress:2026.9.1",
             )

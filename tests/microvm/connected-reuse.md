@@ -1,5 +1,8 @@
 # Connected cold/warm reuse measurement
 
+> Historical evidence for retired MicroVM support. Commands and source paths
+> below describe that qualification revision, not current executable interfaces.
+
 The normal `microvm_reuse::sequential_jobs_reuse_one_supervised_worker` test stays small.
 The ignored `microvm_reuse::cold_warm_connected_benchmark` uses **the same
 `connected_jobs` implementation**, including production ExecutionState, distinct Rust

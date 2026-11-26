@@ -147,9 +147,6 @@ pub(super) struct BackendConfig {
     pub(super) permit_wait_seconds: Option<u64>,
     pub(super) local: Option<RawLocalBackendConfig>,
     pub(super) nomad_callback: Option<RawNomadCallbackConfig>,
-    pub(super) microvm_bind: Option<SocketAddr>,
-    #[serde(default)]
-    pub(super) microvm: Vec<super::microvm::Deployment>,
     #[serde(default)]
     pub(super) ssh: Vec<RawSshConfig>,
     #[serde(default)]

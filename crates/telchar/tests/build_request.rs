@@ -68,11 +68,11 @@ fn loads_classic_stored_derivation_into_build_request() {
 
 #[test]
 fn stored_request_loads_dependencies_without_realizing_outputs() {
-    let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+    let Ok(uri) = std::env::var("TELCHAR_WORKER_TEST_STORE_URI") else {
         let output = std::process::Command::new("bash")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/microvm/canonical-store.sh"
+                "/../../tests/worker-store.sh"
             ))
             .arg(std::env::current_exe().unwrap())
             .args([
