@@ -285,6 +285,10 @@ fn conflicting_cached_request_returns_protocol_error() {
         read_string(&mut output),
         "cached build metadata could not be validated"
     );
+    // Drain the complete structured error before closing the frontend's stdout.
+    // These fields are the source-position and trace counts, even when empty.
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 0);
     drop(input);
     drop(output);
     let status = fixture.frontend.wait().unwrap();
