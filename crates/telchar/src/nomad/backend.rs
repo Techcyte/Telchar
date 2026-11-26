@@ -880,6 +880,25 @@ impl NomadClient {
                     for chunk in live_logs.drain() {
                         logs(&chunk).map_err(NomadAttemptFailure::Terminal)?;
                     }
+                    let cleanup_deadline =
+                        deadline.min(Instant::now() + self.config.cleanup_timeout());
+                    match self.await_execution_cleanup(submission.job_id(), cleanup_deadline) {
+                        Ok(()) => {
+                            crate::persistence::resolve_nomad_execution_obligation(
+                                database, obligation,
+                            )
+                            .map_err(|error| {
+                                NomadAttemptFailure::Terminal(super::diagnostics::failure(
+                                    "Nomad execution obligation could not be resolved",
+                                    error,
+                                ))
+                            })?;
+                        }
+                        Err(error) => {
+                            tracing::warn!(event = "nomad.execution.cleanup.pending", error = %error,
+                                    "terminal build result retains unresolved execution obligation");
+                        }
+                    }
                 }
                 match build.state {
                     crate::persistence::SharedBuildState::Succeeded => {
@@ -891,25 +910,6 @@ impl NomadClient {
                         .map_err(NomadAttemptFailure::Terminal);
                     }
                     crate::persistence::SharedBuildState::Failed => {
-                        let cleanup_deadline =
-                            deadline.min(Instant::now() + self.config.cleanup_timeout());
-                        match self.await_execution_cleanup(submission.job_id(), cleanup_deadline) {
-                            Ok(()) => {
-                                crate::persistence::resolve_nomad_execution_obligation(
-                                    database, obligation,
-                                )
-                                .map_err(|error| {
-                                    NomadAttemptFailure::Terminal(super::diagnostics::failure(
-                                        "Nomad execution obligation could not be resolved",
-                                        error,
-                                    ))
-                                })?;
-                            }
-                            Err(error) => {
-                                tracing::warn!(event = "nomad.execution.cleanup.pending", error = %error,
-                                    "terminal build result retains unresolved execution obligation");
-                            }
-                        }
                         if let Some(failure) = build
                             .result_metadata
                             .as_ref()
