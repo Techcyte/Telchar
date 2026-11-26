@@ -372,6 +372,17 @@ impl BackendPool {
         timeout: Duration,
         available: impl Fn(&BackendTarget) -> bool,
     ) -> io::Result<BackendPermit> {
+        self.acquire_ranked_where(system, required_features, timeout, available, |_| 0)
+    }
+
+    pub fn acquire_ranked_where(
+        &self,
+        system: &str,
+        required_features: &[&str],
+        timeout: Duration,
+        available: impl Fn(&BackendTarget) -> bool,
+        locality: impl Fn(&BackendTarget) -> usize,
+    ) -> io::Result<BackendPermit> {
         let compatible = self
             .inner
             .targets
@@ -412,7 +423,10 @@ impl BackendPool {
             .iter()
             .filter(|target| target.supports(system, required_features) && available(target))
             .fold(None::<&BackendTarget>, |selected, target| match selected {
-                Some(current) if current.selection_priority() >= target.selection_priority() => {
+                Some(current)
+                    if (current.selection_priority(), locality(current))
+                        >= (target.selection_priority(), locality(target)) =>
+                {
                     selected
                 }
                 _ => Some(target),
@@ -445,8 +459,10 @@ impl BackendPool {
                         && permits[target.name()].active < permits[target.name()].maximum
                 })
                 .fold(None, |selected, (index, target)| match selected {
-                    Some((_, priority)) if priority >= target.selection_priority() => selected,
-                    _ => Some((index, target.selection_priority())),
+                    Some((_, rank)) if rank >= (target.selection_priority(), locality(target)) => {
+                        selected
+                    }
+                    _ => Some((index, (target.selection_priority(), locality(target)))),
                 })
                 .map(|(index, _)| index);
             if let Some(index) = index {
@@ -653,6 +669,7 @@ pub struct BuildExecution<'a> {
     build: &'a BuildRequest,
     timeout: Duration,
     target_name: Option<String>,
+    producers: Vec<crate::persistence::OutputProducer>,
     trace_context: telchar_telemetry::TraceContext,
 }
 
@@ -677,6 +694,7 @@ impl<'a> BuildExecution<'a> {
             build,
             timeout,
             target_name: None,
+            producers: Vec::new(),
             trace_context: telchar_telemetry::TraceContext::default(),
         })
     }
@@ -706,6 +724,14 @@ impl<'a> BuildExecution<'a> {
 
     pub fn target_name(&self) -> Option<&str> {
         self.target_name.as_deref()
+    }
+
+    pub fn set_producers(&mut self, producers: Vec<crate::persistence::OutputProducer>) {
+        self.producers = producers;
+    }
+
+    pub fn producers(&self) -> &[crate::persistence::OutputProducer] {
+        &self.producers
     }
 
     pub fn set_trace_context(&mut self, trace_context: telchar_telemetry::TraceContext) {
@@ -831,6 +857,14 @@ pub trait BuildBackend: Send {
         _required_features: &[&str],
     ) -> io::Result<Option<BackendPermit>> {
         Ok(None)
+    }
+
+    fn reserve_build(
+        &self,
+        execution: &BuildExecution<'_>,
+        required_features: &[&str],
+    ) -> io::Result<Option<BackendPermit>> {
+        self.reserve_target(execution.build().system(), required_features)
     }
 
     fn selected_target(

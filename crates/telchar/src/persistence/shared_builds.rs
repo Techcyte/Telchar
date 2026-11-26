@@ -1534,6 +1534,31 @@ fn complete_shared_build(
                 &[&attempt_id, &classification, &result_metadata_text],
             )
             .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+        if terminal_state == SharedBuildState::Succeeded
+            && result_metadata
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                == Some("built")
+            && result_metadata
+                .get("recovered")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            transaction.execute(
+                "INSERT INTO output_producers (store_path, attempt_id, backend_name, backend_kind, location)
+                 SELECT unnest(b.expected_outputs), a.attempt_id, a.backend_name, a.backend_kind, a.producer_location
+                 FROM shared_build_attempts a JOIN shared_builds b USING (derivation_path)
+                 WHERE a.attempt_id = $1 AND a.state = 'succeeded'
+                   AND a.backend_kind IN ('local', 'static-ssh', 'nomad')
+                   AND a.backend_name = b.backend_name
+                   AND a.backend_kind = b.backend_kind
+                   AND a.backend_execution_id IS NOT DISTINCT FROM b.backend_execution_id
+                 ON CONFLICT (store_path) DO UPDATE SET
+                     attempt_id = EXCLUDED.attempt_id, backend_name = EXCLUDED.backend_name,
+                     backend_kind = EXCLUDED.backend_kind, location = EXCLUDED.location",
+                &[&attempt_id],
+            ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+        }
         if terminal_state == SharedBuildState::Succeeded && hook_delivery_enabled {
             let expected_outputs: Vec<String> = row
                 .try_get("expected_outputs")

@@ -725,8 +725,11 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     // return would leave the shared build unfinished, and later
                                     // requests for the derivation would wait on it until they time out.
                                     (|| -> io::Result<_> {
+                                    execution.set_producers(crate::persistence::read_output_producers(
+                                        database, admitted.input_sources(),
+                                    )?);
                                     let permit = build_executor
-                                        .reserve_target(admitted.system(), &required_features)?
+                                        .reserve_build(&execution, &required_features)?
                                         .ok_or_else(|| io::Error::other(
                                             "backend capacity reservation is unavailable",
                                         ))?;

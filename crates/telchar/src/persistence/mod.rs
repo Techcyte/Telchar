@@ -36,6 +36,7 @@ mod build_requests;
 mod callback_nonces;
 mod connection;
 mod post_build_hooks;
+mod producers;
 pub use connection::{
     Database, DatabaseConnection, DatabaseError, DatabaseSource, DatabaseTransaction,
     validate_verified_connection,
@@ -55,5 +56,6 @@ pub use executor::*;
 pub use leases::*;
 pub use migrations::*;
 pub use post_build_hooks::*;
+pub use producers::*;
 pub use sessions::*;
 pub use shared_builds::*;

@@ -507,6 +507,49 @@ pub struct BackendExecutor {
     shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
 }
 
+impl BackendExecutor {
+    fn reserve_with_producers(
+        &self,
+        system: &str,
+        required_features: &[&str],
+        producers: &[crate::persistence::OutputProducer],
+    ) -> io::Result<Option<crate::backend::BackendPermit>> {
+        self.backends
+            .inner
+            .pool
+            .acquire_ranked_where(
+                system,
+                required_features,
+                self.backends.inner.permit_wait,
+                |target| {
+                    target.kind() != BackendKind::StaticSsh
+                        || (self
+                            .backends
+                            .inner
+                            .schedulable_static_ssh
+                            .read()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .contains(target.name())
+                            && self
+                                .backends
+                                .inner
+                                .static_ssh_health
+                                .is_ready(target.name()))
+                },
+                |target| {
+                    producers
+                        .iter()
+                        .filter(|producer| {
+                            producer.backend_name == target.name()
+                                && producer.backend_kind == target.kind()
+                        })
+                        .count()
+                },
+            )
+            .map(Some)
+    }
+}
+
 impl BuildBackend for BackendExecutor {
     fn compatible_live_log_queue_bytes(&self, system: &str, required_features: &[&str]) -> usize {
         self.backends
@@ -560,30 +603,19 @@ impl BuildBackend for BackendExecutor {
         system: &str,
         required_features: &[&str],
     ) -> io::Result<Option<crate::backend::BackendPermit>> {
-        self.backends
-            .inner
-            .pool
-            .acquire_where(
-                system,
-                required_features,
-                self.backends.inner.permit_wait,
-                |target| {
-                    target.kind() != BackendKind::StaticSsh
-                        || (self
-                            .backends
-                            .inner
-                            .schedulable_static_ssh
-                            .read()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .contains(target.name())
-                            && self
-                                .backends
-                                .inner
-                                .static_ssh_health
-                                .is_ready(target.name()))
-                },
-            )
-            .map(Some)
+        self.reserve_with_producers(system, required_features, &[])
+    }
+
+    fn reserve_build(
+        &self,
+        execution: &BuildExecution<'_>,
+        required_features: &[&str],
+    ) -> io::Result<Option<crate::backend::BackendPermit>> {
+        self.reserve_with_producers(
+            execution.build().system(),
+            required_features,
+            execution.producers(),
+        )
     }
 
     fn selected_target(

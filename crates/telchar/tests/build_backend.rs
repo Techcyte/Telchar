@@ -198,6 +198,50 @@ fn backend_pool_preserves_order_for_equal_priorities() {
 }
 
 #[test]
+fn backend_locality_ranks_only_available_capacity_within_priority() {
+    let targets = vec![
+        BackendTarget::new("ssh", BackendKind::StaticSsh, "x86_64-linux", ["kvm"]).unwrap(),
+        BackendTarget::new("nomad", BackendKind::Nomad, "x86_64-linux", ["kvm"]).unwrap(),
+        BackendTarget::new("priority", BackendKind::Local, "x86_64-linux", ["kvm"])
+            .unwrap()
+            .with_selection_priority(10)
+            .unwrap(),
+    ];
+    let pool = BackendPool::new(targets, vec![1, 1, 1]).unwrap();
+    let acquire = |ready: &str| {
+        pool.acquire_ranked_where(
+            "x86_64-linux",
+            &["kvm"],
+            Duration::from_millis(1),
+            |target| ready != target.name(),
+            |target| if target.name() == "nomad" { 2 } else { 0 },
+        )
+        .unwrap()
+    };
+    let priority = acquire("");
+    assert_eq!(priority.target().name(), "priority");
+    let producer = acquire("");
+    assert_eq!(producer.target().name(), "nomad");
+    let fallback = acquire("");
+    assert_eq!(fallback.target().name(), "ssh");
+    drop((producer, fallback));
+    let unavailable = acquire("nomad");
+    assert_eq!(unavailable.target().name(), "ssh");
+    drop(unavailable);
+    let stale = pool
+        .acquire_ranked_where(
+            "x86_64-linux",
+            &["kvm"],
+            Duration::from_millis(1),
+            |_| true,
+            |target| usize::from(target.name() == "removed-producer"),
+        )
+        .unwrap();
+    assert_eq!(stale.target().name(), "ssh");
+    assert_eq!(priority.target().name(), "priority");
+}
+
+#[test]
 fn backend_pool_skips_unavailable_compatible_targets() {
     let pool = BackendPool::new(
         vec![
