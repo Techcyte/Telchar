@@ -170,7 +170,7 @@ address = "builder-1.example"
 selection_priority = 10
 ```
 
-`selection_priority` is optional and defaults to `1`. Higher values receive compatible builds first. When every compatible backend at a higher priority is at capacity, selection falls through to available lower-priority local, SSH, or Nomad capacity. Equal priorities preserve configuration order. This setting is distinct from Nomad's allocation `priority` range. Consul-discovered SSH services may override their pool default with scalar service metadata `telchar_priority`.
+`selection_priority` is optional and defaults to `1`. Higher values receive compatible builds first. When every compatible backend at a higher priority is at capacity, selection falls through to available lower-priority local, SSH, or Nomad capacity. Within equal priorities, successful producers of dependency input paths receive preference; ties preserve configuration order. Locality never overrides system/features, SSH readiness, or available capacity. Missing, stale, or busy producers fall back to ordinary selection without waiting for their location. Cached or already-valid outputs do not create a producer record. This setting is distinct from Nomad's allocation `priority` range. Consul-discovered SSH services may override their pool default with scalar service metadata `telchar_priority`.
 
 All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged after capacity assignment.
 

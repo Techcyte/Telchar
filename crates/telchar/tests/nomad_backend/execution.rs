@@ -1214,6 +1214,9 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         let (mut submit_request, _) = listener.accept().expect("submit request accepts");
         let request = read_http_request_with_body(&mut submit_request);
         assert!(request.starts_with("POST /v1/jobs?namespace=telchar HTTP/1.1\r\n"));
+        let job: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(job["Job"]["Affinities"][0]["RTarget"], "producer-node");
+        assert_eq!(job["Job"]["Affinities"][0]["Weight"], 50);
         write_json_response(&mut submit_request, 200, r#"{"EvalID":"evaluation-1"}"#);
 
         let (mut job_request, _) = listener.accept().expect("job request accepts");
@@ -1244,6 +1247,11 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
     execution
         .set_target_name("nomad-test")
         .expect("selected target records");
+    execution.set_producers(vec![telchar::persistence::OutputProducer {
+        backend_name: "nomad-test".into(),
+        backend_kind: BackendKind::Nomad,
+        location: Some("producer-node".into()),
+    }]);
     execution.set_trace_context(
         telchar_telemetry::TraceContext::new(
             Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),

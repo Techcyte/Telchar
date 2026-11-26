@@ -340,7 +340,7 @@ pub fn serve_connection(
         .find(|backend| backend.target().name() == authentication.backend)
         .ok_or_else(|| io::Error::other("Nomad callback backend is unavailable"))?;
     let allocation = crate::nomad::backend::NomadClient::new(backend.clone())?;
-    match backend.transfer_authentication() {
+    let admitted = match backend.transfer_authentication() {
         NomadTransferAuthentication::WorkloadIdentity {
             issuer,
             verify_issuer,
@@ -371,7 +371,7 @@ pub fn serve_connection(
                 "POST",
                 callback_path(callback.public_url())?,
                 SystemTime::now(),
-            )?;
+            )?
         }
         NomadTransferAuthentication::Hmac {
             key_id,
@@ -405,9 +405,9 @@ pub fn serve_connection(
                 "POST",
                 callback_path(callback.public_url())?,
                 SystemTime::now(),
-            )?;
+            )?
         }
-    }
+    };
     if !execution.matches(&authentication) {
         return Err(io::Error::other(
             "Nomad callback execution identity is inconsistent",
@@ -428,6 +428,14 @@ pub fn serve_connection(
     let attempt_id = execution
         .attempt_id()
         .ok_or_else(|| io::Error::other("Nomad callback attempt identity is unavailable"))?;
+    if let Some(location) = admitted.producer_location() {
+        crate::persistence::record_attempt_producer_location(
+            database,
+            derivation_path,
+            attempt_id,
+            location,
+        )?;
+    }
     let build_request = execution
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
@@ -638,7 +646,7 @@ pub fn serve_connection(
         attempt_id,
         None,
         &serde_json::json!({
-            "status": "built",
+            "status": if matches!(outcome, BuildCollectionOutcome::AlreadyValid) { "already-valid" } else { "built" },
             "outputs": build_request.expected_outputs().iter().map(|(name, path)| {
                 serde_json::json!({
                     "name": String::from_utf8_lossy(name),
@@ -682,6 +690,7 @@ fn read_transfer_frame<S: io::Read + io::Write>(
 
 enum BuildCollectionOutcome {
     Built,
+    AlreadyValid,
     Failed {
         diagnostic: Option<String>,
         nix_failure: Option<crate::backend::BuildFailure>,
@@ -737,7 +746,7 @@ fn log_output_collection_outcome(
     outcome: &BuildCollectionOutcome,
 ) {
     match outcome {
-        BuildCollectionOutcome::Built => tracing::info!(
+        BuildCollectionOutcome::Built | BuildCollectionOutcome::AlreadyValid => tracing::info!(
             event = "nomad.callback.output_collection.completed",
             backend,
             job_id,
@@ -924,7 +933,11 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                         ));
                     }
                 }
-                return Ok(BuildCollectionOutcome::Built);
+                return Ok(if result.outcome == BuildOutcome::AlreadyValid {
+                    BuildCollectionOutcome::AlreadyValid
+                } else {
+                    BuildCollectionOutcome::Built
+                });
             }
             _ => {
                 return Err(io::Error::new(

@@ -3,6 +3,52 @@
 use super::*;
 
 #[test]
+fn execution_locality_emits_only_backend_owned_soft_node_affinity() {
+    let root = fixture_root();
+    let config = load_nomad_config(&root, "http://127.0.0.1:1", None);
+    let request = admitted_request();
+    let mut execution = BuildExecution::new("locality", &request, Duration::from_secs(60)).unwrap();
+    let render = |execution: &BuildExecution<'_>| {
+        telchar::nomad::backend::render_job_for_execution(
+            &config,
+            execution,
+            request.shared_build_key().as_bytes(),
+            1,
+        )
+        .unwrap()
+    };
+    let ordinary = render(&execution);
+    execution.set_producers(vec![telchar::persistence::OutputProducer {
+        backend_name: config.target().name().to_owned(),
+        backend_kind: BackendKind::Nomad,
+        location: Some("missing-or-available-node".into()),
+    }]);
+    let preferred = render(&execution);
+    assert_eq!(
+        preferred["Job"]["Affinities"],
+        serde_json::json!([{
+            "LTarget": "${node.unique.id}", "Operand": "=", "RTarget": "missing-or-available-node", "Weight": 50,
+        }])
+    );
+    assert_eq!(
+        preferred["Job"]["Constraints"],
+        ordinary["Job"]["Constraints"]
+    );
+    assert_eq!(preferred["Job"]["ID"], ordinary["Job"]["ID"]);
+    assert_eq!(
+        preferred["Job"]["TaskGroups"],
+        ordinary["Job"]["TaskGroups"]
+    );
+    execution.set_producers(vec![telchar::persistence::OutputProducer {
+        backend_name: "different-backend".into(),
+        backend_kind: BackendKind::Nomad,
+        location: Some("foreign-node".into()),
+    }]);
+    assert_eq!(render(&execution), ordinary);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn renders_operator_selected_driver_and_stable_backend_bound_job() {
     let name = "rendering::renders_operator_selected_driver_and_stable_backend_bound_job";
     if !telchar_test_support::process::is_child(name) {

@@ -386,6 +386,7 @@ pub struct OutputReceipt {
 #[serde(rename_all = "kebab-case")]
 pub enum BuildOutcome {
     Built,
+    AlreadyValid,
     Failed,
 }
 
@@ -871,7 +872,7 @@ impl OutputTransferSession {
             }
         }
         match result.outcome {
-            BuildOutcome::Built
+            BuildOutcome::Built | BuildOutcome::AlreadyValid
                 if result.diagnostic.is_none()
                     && self
                         .outputs

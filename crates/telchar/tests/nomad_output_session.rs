@@ -40,7 +40,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
     assert!(
         session
             .finish(&BuildResultMetadata {
-                outcome: BuildOutcome::Built,
+                outcome: BuildOutcome::AlreadyValid,
                 diagnostic: None,
                 nix_failure: None,
             })
@@ -73,7 +73,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
         .expect("second receipt records");
     session
         .finish(&BuildResultMetadata {
-            outcome: BuildOutcome::Built,
+            outcome: BuildOutcome::AlreadyValid,
             diagnostic: None,
             nix_failure: None,
         })

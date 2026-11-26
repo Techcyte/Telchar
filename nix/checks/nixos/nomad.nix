@@ -102,6 +102,17 @@
         stock_client.succeed(build + " > /tmp/nomad-build-reused.out 2>&1 || { cat /tmp/nomad-build-reused.out >&2; exit 1; }")
         stock_client.succeed("grep -Fqx '" + output_path + "' /tmp/nomad-build-reused.out")
         nomad_server.succeed("${pkgs.curl}/bin/curl --fail --silent --show-error 'http://127.0.0.1:4646/v1/jobs?namespace=telchar' | ${pkgs.jq}/bin/jq -e 'length == 1'")
+        producer_node = gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select location from output_producers where store_path = '" + output_path + "'\"").strip()
+        assert producer_node, "validated Nomad output must retain exact allocation NodeID"
+        consumer_expr = 'derivation { name = "telchar-locality-consumer"; system = builtins.currentSystem; builder = "${pkgs.runtimeShell}"; dependency = builtins.storePath ' + output_path + '; args = [ "-c" "${pkgs.coreutils}/bin/cat $dependency > $out" ]; }'
+        stock_client.succeed("printf '%s' " + shlex.quote(consumer_expr) + " > /tmp/locality-consumer.nix")
+        consumer_drv = stock_client.succeed("nix-instantiate /tmp/locality-consumer.nix").strip()
+        consumer_output = stock_client.succeed(build.replace(derivation_path, consumer_drv)).strip()
+        gateway.succeed("test \"$(cat " + shlex.quote(consumer_output) + ")\" = nomad")
+        consumer_job = gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select backend_execution_id from shared_builds where derivation_path = '" + consumer_drv + "'\"").strip()
+        consumer_spec = json.loads(nomad_server.succeed("nomad job inspect -namespace telchar -json " + shlex.quote(consumer_job)))
+        assert consumer_spec["Affinities"] == [{"LTarget": "$" + "{node.unique.id}", "Operand": "=", "RTarget": producer_node, "Weight": 50}], consumer_spec
+        assert not any(item.get("LTarget") == "$" + "{node.unique.id}" for item in (consumer_spec.get("Constraints") or [])), consumer_spec
         # A sole request and four joined stock clients must see the actual Nix
         # failure, not a transfer error. A later request executes a new attempt.
         failed_drv = stock_client.succeed("nix-instantiate ${failingDerivation}").strip()

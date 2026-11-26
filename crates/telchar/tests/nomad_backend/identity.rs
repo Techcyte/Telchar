@@ -140,13 +140,16 @@ fn verifies_exact_callback_allocation_identity() {
         write_json_response(
             &mut request,
             200,
-            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"job-1","TaskGroup":"build","ClientStatus":"running","TaskStates":{"prestart":{"State":"dead"},"build":{"State":"running"}}}"#,
+            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"job-1","TaskGroup":"build","NodeID":"producer-node","ClientStatus":"running","TaskStates":{"prestart":{"State":"dead"},"build":{"State":"running"}}}"#,
         );
     });
 
-    client
-        .verify_allocation("allocation-1", "job-1", "build")
-        .expect("exact allocation verifies");
+    assert_eq!(
+        client
+            .verify_allocation("allocation-1", "job-1", "build")
+            .expect("exact allocation verifies"),
+        Some("producer-node".to_owned())
+    );
     server.join().expect("server joins");
     fs::remove_dir_all(root).expect("fixture removes");
 }

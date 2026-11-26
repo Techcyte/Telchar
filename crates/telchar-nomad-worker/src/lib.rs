@@ -315,7 +315,15 @@ impl WorkerSession {
         self.send_metadata(
             FrameKind::BuildResult,
             &BuildResultMetadata {
-                outcome: BuildOutcome::Built,
+                outcome: match result.status() {
+                    nix_worker_protocol::WorkerBuildStatus::AlreadyValid => {
+                        BuildOutcome::AlreadyValid
+                    }
+                    nix_worker_protocol::WorkerBuildStatus::Built => BuildOutcome::Built,
+                    nix_worker_protocol::WorkerBuildStatus::Failed(_) => {
+                        unreachable!("failure returned before output transfer")
+                    }
+                },
                 diagnostic: None,
                 nix_failure: None,
             },

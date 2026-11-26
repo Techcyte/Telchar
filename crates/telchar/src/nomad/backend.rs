@@ -202,6 +202,8 @@ struct ExactAllocationResponse {
     job_id: String,
     #[serde(rename = "TaskGroup")]
     task_group: String,
+    #[serde(rename = "NodeID", default)]
+    node_id: String,
     #[serde(rename = "ClientStatus")]
     client_status: String,
     #[serde(rename = "TaskStates", default)]
@@ -277,7 +279,7 @@ impl NomadClient {
         allocation_id: &str,
         job_id: &str,
         task: &str,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
         if !valid_nomad_identity(allocation_id) {
             return Err(io::Error::other(format!(
                 "Nomad allocation verification failed: invalid allocation ID {allocation_id:?}"
@@ -331,8 +333,10 @@ impl NomadClient {
                 "Nomad allocation status verification failed",
             ));
         }
+        let node_id = (!allocation.node_id.is_empty() && valid_nomad_identity(&allocation.node_id))
+            .then_some(allocation.node_id);
         if allocation.task_states.is_empty() {
-            return Ok(());
+            return Ok(node_id);
         }
         let task_state = allocation
             .task_states
@@ -343,7 +347,7 @@ impl NomadClient {
             task_state = task_state.state,
             "Nomad allocation verified"
         );
-        Ok(())
+        Ok(node_id)
     }
 
     fn request_timeout(&self) -> io::Result<std::time::Duration> {
@@ -794,11 +798,17 @@ impl NomadClient {
             ))
         })?;
         let submission = self
-            .submit_for_features_with_trace_context_at_attempt(
+            .submit_rendered_job(
                 shared_build_key,
-                execution.build().required_system_features(),
                 attempt_ordinal,
                 execution.trace_context(),
+                render_job_for_execution(
+                    &self.config,
+                    execution,
+                    shared_build_key,
+                    attempt_ordinal,
+                )
+                .map_err(NomadAttemptFailure::Terminal)?,
             )
             .map_err(NomadAttemptFailure::Terminal);
         crate::service::metrics::nomad_submission_finished(
@@ -903,7 +913,17 @@ impl NomadClient {
                 match build.state {
                     crate::persistence::SharedBuildState::Succeeded => {
                         return BuildResult::new(
-                            BuildStatus::Built,
+                            if build
+                                .result_metadata
+                                .as_ref()
+                                .and_then(|metadata| metadata.get("status"))
+                                .and_then(Value::as_str)
+                                == Some("already-valid")
+                            {
+                                BuildStatus::AlreadyValid
+                            } else {
+                                BuildStatus::Built
+                            },
                             execution.build().expected_outputs().to_vec(),
                             OutputTrust::TrustedExecutor,
                         )
@@ -1094,6 +1114,27 @@ impl NomadClient {
         attempt_ordinal: usize,
         trace_context: &telchar_telemetry::TraceContext,
     ) -> io::Result<NomadSubmission> {
+        self.submit_rendered_job(
+            shared_build_key,
+            attempt_ordinal,
+            trace_context,
+            render_job_for_features_with_trace_context_at_attempt(
+                &self.config,
+                shared_build_key,
+                required_features,
+                attempt_ordinal,
+                trace_context,
+            )?,
+        )
+    }
+
+    fn submit_rendered_job(
+        &self,
+        shared_build_key: &[u8],
+        attempt_ordinal: usize,
+        trace_context: &telchar_telemetry::TraceContext,
+        job: Value,
+    ) -> io::Result<NomadSubmission> {
         let started = Instant::now();
         let job_id =
             deterministic_job_name_for_attempt(&self.config, shared_build_key, attempt_ordinal)?;
@@ -1118,13 +1159,7 @@ impl NomadClient {
             .post(format!("{}/v1/jobs", self.config.endpoint()))
             .timeout(self.request_timeout()?)
             .query(&[("namespace", self.config.namespace())])
-            .json(&render_job_for_features_with_trace_context_at_attempt(
-                &self.config,
-                shared_build_key,
-                required_features,
-                attempt_ordinal,
-                trace_context,
-            )?)
+            .json(&job)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|error| super::diagnostics::failure("Nomad job submission failed", error))?;
@@ -1280,6 +1315,40 @@ pub fn render_job_for_features<S: AsRef<str>>(
     required_features: &[S],
 ) -> io::Result<Value> {
     render_job_for_features_at_attempt(config, shared_build_key, required_features, 1)
+}
+
+pub fn render_job_for_execution(
+    config: &NomadBackendConfig,
+    execution: &BuildExecution<'_>,
+    shared_build_key: &[u8],
+    attempt_ordinal: usize,
+) -> io::Result<Value> {
+    let mut job = render_job_for_features_with_trace_context_at_attempt(
+        config,
+        shared_build_key,
+        execution.build().required_system_features(),
+        attempt_ordinal,
+        execution.trace_context(),
+    )?;
+    let mut locations = std::collections::BTreeMap::<&str, usize>::new();
+    for producer in execution.producers().iter().filter(|producer| {
+        producer.backend_kind == crate::backend::BackendKind::Nomad
+            && producer.backend_name == config.target().name()
+    }) {
+        if let Some(location) = producer
+            .location
+            .as_deref()
+            .filter(|value| valid_nomad_identity(value))
+        {
+            *locations.entry(location).or_default() += 1;
+        }
+    }
+    if let Some((location, _)) = locations.into_iter().max_by_key(|(_, count)| *count) {
+        job["Job"]["Affinities"] = json!([{
+            "LTarget": "${node.unique.id}", "Operand": "=", "RTarget": location, "Weight": 50,
+        }]);
+    }
+    Ok(job)
 }
 
 pub fn render_job_with_trace_context(

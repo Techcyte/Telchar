@@ -97,7 +97,7 @@ fn accepts_successful_daemon_build_statuses() {
         let result = result.unwrap_or_else(|error| panic!("successful status {status}: {error}"));
         assert_eq!(
             result.status(),
-            if status == 0 || status == 1 {
+            if status == 0 {
                 WorkerBuildStatus::Built
             } else {
                 WorkerBuildStatus::AlreadyValid
