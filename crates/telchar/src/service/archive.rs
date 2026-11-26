@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use rustix::fs::{Mode, OFlags};
 use sha2::{Digest, Sha256};
 
+mod logs;
 mod s3;
+pub use logs::{AttemptLogs, LogCapture, LogReceipt};
 pub use s3::S3Archive;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -25,14 +27,34 @@ pub fn maintain_history(
     cursor: &mut crate::persistence::HistoryCursor,
 ) -> io::Result<u64> {
     let Some(policy) = policy else { return Ok(0) };
-    let destination = policy
-        .destination
-        .as_ref()
-        .map(|path| FilesystemArchive::new(path.clone()))
-        .transpose()?;
-    let s3 = policy
-        .s3
-        .as_ref()
+    crate::persistence::sweep_terminal_history(
+        database,
+        policy.retention,
+        policy.maximum_builds,
+        cursor,
+        |key, payload| {
+            deliver_archive(
+                policy.destination.as_deref(),
+                policy.s3.as_ref(),
+                key,
+                payload,
+            )
+        },
+    )
+}
+
+pub fn deliver_archive(
+    directory: Option<&std::path::Path>,
+    s3_config: Option<&crate::service::config::HistoryS3>,
+    key: &str,
+    payload: &[u8],
+) -> io::Result<()> {
+    if let Some(directory) = directory {
+        return FilesystemArchive::new(directory.to_owned())?
+            .deliver(key, payload)
+            .map(|_| ());
+    }
+    let s3 = s3_config
         .map(|config| {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -58,6 +80,15 @@ pub fn maintain_history(
             (&mut file).take(16385).read_to_end(&mut bytes)?;
             let credentials: Credentials = serde_json::from_slice(&bytes)
                 .map_err(|_| io::Error::other("invalid archive credentials file"))?;
+            if credentials.access_key_id.trim().is_empty()
+                || credentials.secret_access_key.trim().is_empty()
+                || credentials
+                    .session_token
+                    .as_ref()
+                    .is_some_and(|token| token.trim().is_empty())
+            {
+                return Err(io::Error::other("invalid archive credentials file"));
+            }
             S3Archive::new(
                 &config.endpoint,
                 &config.region,
@@ -72,19 +103,33 @@ pub fn maintain_history(
             )
         })
         .transpose()?;
-    crate::persistence::sweep_terminal_history(
-        database,
-        policy.retention,
-        policy.maximum_builds,
-        cursor,
-        |key, payload| match &destination {
-            Some(archive) => archive.deliver(key, payload).map(|_| ()),
-            None => match &s3 {
-                Some(archive) => archive.deliver(key, payload),
-                None => Ok(()),
-            },
-        },
-    )
+    match s3 {
+        Some(archive) => archive.deliver(key, payload),
+        None => Ok(()),
+    }
+}
+
+fn open_directory(path: &std::path::Path) -> io::Result<File> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return Err(io::Error::other("invalid archive directory"));
+    }
+    let mut directory = File::open("/")?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = File::from(rustix::fs::openat(
+                    &directory,
+                    name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?);
+            }
+            _ => return Err(io::Error::other("invalid archive directory")),
+        }
+    }
+    Ok(directory)
 }
 
 pub struct FilesystemArchive {
@@ -94,10 +139,7 @@ pub struct FilesystemArchive {
 
 impl FilesystemArchive {
     pub fn new(path: PathBuf) -> io::Result<Self> {
-        let root = OpenOptions::new()
-            .read(true)
-            .custom_flags((OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32)
-            .open(&path)?;
+        let root = open_directory(&path)?;
         Ok(Self { root, path })
     }
 

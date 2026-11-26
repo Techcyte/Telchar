@@ -831,15 +831,34 @@ impl BuildBackend for BackendExecutor {
                 return result;
             }
         };
+        let capture = std::str::from_utf8(execution.build().derivation_path())
+            .ok()
+            .and_then(|path| {
+                crate::persistence::read_shared_build_attempt(&self.database, path)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|attempt| {
+                self.shared_builds
+                    .begin_attempt_logs(&self.database, attempt.attempt_id)
+            });
         let result = backend.execute_with_logs(
             execution,
             &mut |chunk| {
+                if let Some(capture) = &capture {
+                    capture.push(chunk);
+                }
                 self.shared_builds
                     .publish_log(&execution.build().shared_build_key(), chunk);
                 logs(chunk)
             },
             cancelled,
         );
+        if result.is_ok()
+            && let Some(capture) = capture
+        {
+            capture.finish();
+        }
         let result_name = if result
             .as_ref()
             .is_ok_and(|result| result.failure().is_none())

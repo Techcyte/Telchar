@@ -113,11 +113,24 @@ pub struct HistoryS3 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct LogRetention {
+    pub retention_days: u64,
+    pub directory: PathBuf,
+    pub maximum_bytes: u64,
+    pub maximum_queue_bytes: usize,
+    pub maximum_captures: usize,
+    pub maximum_spool_bytes: u64,
+    pub destination: Option<PathBuf>,
+    pub s3: Option<HistoryS3>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
     lifecycle_detail_retention: Duration,
     history_retention: Option<HistoryRetention>,
+    log_retention: Option<LogRetention>,
     maximum_retained_input_bytes: u64,
     audit_enabled: bool,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
@@ -176,6 +189,10 @@ impl ServiceConfig {
 
     pub fn lifecycle_detail_retention(&self) -> Duration {
         self.lifecycle_detail_retention
+    }
+
+    pub fn log_retention(&self) -> Option<&LogRetention> {
+        self.log_retention.as_ref()
     }
 
     pub fn history_retention(&self) -> Option<&HistoryRetention> {
@@ -284,6 +301,7 @@ impl ServiceConfig {
             || self.output_retention != replacement.output_retention
             || self.lifecycle_detail_retention != replacement.lifecycle_detail_retention
             || self.history_retention != replacement.history_retention
+            || self.log_retention != replacement.log_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.audit_enabled != replacement.audit_enabled
             || self.post_build_hook != replacement.post_build_hook
@@ -405,6 +423,68 @@ impl ServiceConfig {
         }
         let lifecycle_detail_retention =
             Duration::from_secs(lifecycle_detail_retention_days * 86400);
+        let log_retention = raw
+            .log_retention
+            .map(|section| {
+                if !(1..=3650).contains(&section.retention_days)
+                    || !section.directory.is_absolute()
+                    || !(1..=8 * 1024 * 1024).contains(&section.maximum_bytes)
+                    || !(1..=16 * 1024 * 1024).contains(&section.maximum_queue_bytes)
+                    || !(1..=64).contains(&section.maximum_captures)
+                    || section.maximum_spool_bytes
+                        < section
+                            .maximum_bytes
+                            .saturating_mul(2)
+                            .saturating_add(65536)
+                    || section.maximum_spool_bytes > 1024 * 1024 * 1024 * 1024
+                    || (section.destination.is_some() && section.s3.is_some())
+                    || section
+                        .destination
+                        .as_ref()
+                        .is_some_and(|path| !path.is_absolute())
+                {
+                    return Err(invalid("log retention bounds are invalid"));
+                }
+                let s3 = section
+                    .s3
+                    .map(|s3| {
+                        let timeout = Duration::from_secs(s3.timeout_seconds.unwrap_or(30));
+                        validate_protected_file(
+                            s3.credentials_file.clone(),
+                            "archive credentials file is invalid",
+                        )?;
+                        crate::service::archive::S3Archive::new(
+                            &s3.endpoint,
+                            &s3.region,
+                            aws_credential_types::Credentials::new(
+                                "validation",
+                                "validation",
+                                None,
+                                None,
+                                "configuration",
+                            ),
+                            timeout,
+                        )?;
+                        Ok::<_, io::Error>(HistoryS3 {
+                            endpoint: s3.endpoint,
+                            region: s3.region,
+                            credentials_file: s3.credentials_file,
+                            timeout,
+                        })
+                    })
+                    .transpose()?;
+                Ok(LogRetention {
+                    retention_days: section.retention_days,
+                    destination: section.destination,
+                    s3,
+                    directory: section.directory,
+                    maximum_bytes: section.maximum_bytes,
+                    maximum_queue_bytes: section.maximum_queue_bytes,
+                    maximum_captures: section.maximum_captures,
+                    maximum_spool_bytes: section.maximum_spool_bytes,
+                })
+            })
+            .transpose()?;
         let history_retention = raw
             .history_retention
             .map(|section| {
@@ -608,6 +688,7 @@ impl ServiceConfig {
             output_retention,
             lifecycle_detail_retention,
             history_retention,
+            log_retention,
             maximum_retained_input_bytes,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
             post_build_hook,

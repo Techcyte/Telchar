@@ -7,6 +7,7 @@ pub(super) struct RawServiceConfig {
     pub(super) output_retention_seconds: Option<u64>,
     pub(super) lifecycle_detail_retention_days: Option<u64>,
     pub(super) history_retention: Option<HistoryRetentionSection>,
+    pub(super) log_retention: Option<LogRetentionSection>,
     pub(super) maximum_retained_input_bytes: Option<u64>,
     pub(super) post_build_hook: Option<PostBuildHookSection>,
     pub(super) audit: Option<AuditSection>,
@@ -15,6 +16,19 @@ pub(super) struct RawServiceConfig {
     pub(super) identity: Option<IdentityConfig>,
     pub(super) scheduling: Option<SchedulingConfig>,
     pub(super) backends: Option<BackendConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LogRetentionSection {
+    pub(super) retention_days: u64,
+    pub(super) directory: PathBuf,
+    pub(super) maximum_bytes: u64,
+    pub(super) maximum_queue_bytes: usize,
+    pub(super) maximum_captures: usize,
+    pub(super) maximum_spool_bytes: u64,
+    pub(super) destination: Option<PathBuf>,
+    pub(super) s3: Option<HistoryS3Section>,
 }
 
 #[derive(Default, Deserialize)]

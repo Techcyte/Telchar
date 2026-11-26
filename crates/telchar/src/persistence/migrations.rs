@@ -185,6 +185,21 @@ const MIGRATIONS: &[Migration] = &[
         name: "session_lease_owner_index",
         sql: include_str!("../../migrations/0034_session_lease_owner_index.sql"),
     },
+    Migration {
+        version: 35,
+        name: "attempt_log_archives",
+        sql: include_str!("../../migrations/0035_attempt_log_archives.sql"),
+    },
+    Migration {
+        version: 36,
+        name: "log_archive_spool",
+        sql: include_str!("../../migrations/0036_log_archive_spool.sql"),
+    },
+    Migration {
+        version: 37,
+        name: "log_archive_expiry",
+        sql: include_str!("../../migrations/0037_log_archive_expiry.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

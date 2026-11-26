@@ -89,12 +89,33 @@ fn durable_commands_report_empty_authoritative_state() {
         })
     );
 
+    let attempt = telchar::persistence::read_shared_build_attempt(database.url(), derivation)
+        .unwrap()
+        .unwrap();
+    telchar::persistence::begin_log_archive(database.url(), attempt.attempt_id).unwrap();
+    telchar::persistence::finish_log_archive(
+        database.url(),
+        attempt.attempt_id,
+        false,
+        42,
+        "s3://archive/logs/attempt.log.zst",
+        &"a".repeat(64),
+    )
+    .unwrap();
     let build = operator(&config, &["build", derivation]);
     assert!(build.status.success(), "{}", stderr(&build));
     let report = json(&build);
     assert_eq!(report["derivation_path"], derivation);
     assert_eq!(report["state"], "running");
     assert_eq!(report["backend_name"], "local-main");
+    assert_eq!(report["log_archive"]["attempt_id"], attempt.attempt_id);
+    assert_eq!(report["log_archive"]["state"], "available");
+    assert_eq!(report["log_archive"]["complete"], false);
+    assert_eq!(report["log_archive"]["uncompressed_bytes"], 42);
+    assert_eq!(
+        report["log_archive"]["object_key"],
+        "s3://archive/logs/attempt.log.zst"
+    );
 
     let backends = operator(&config, &["backends"]);
     assert!(backends.status.success(), "{}", stderr(&backends));

@@ -30,4 +30,7 @@ fn filesystem_delivery_does_not_follow_destination_symlinks() {
     let archive = FilesystemArchive::new(directory.path().to_owned()).unwrap();
     assert!(archive.deliver("history/42.jsonl", b"private").is_err());
     assert!(!outside.path().join("42.jsonl").exists());
+    std::fs::create_dir(outside.path().join("destination")).unwrap();
+    symlink(outside.path(), directory.path().join("redirected")).unwrap();
+    assert!(FilesystemArchive::new(directory.path().join("redirected/destination")).is_err());
 }
