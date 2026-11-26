@@ -477,7 +477,17 @@ pub fn serve_connection(
         .inner_mut()
         .set_write_timeout(Some(limits.transfer_idle_timeout()))?;
     let mut closure = GatewayStoreClosureBackend::new(gateway_store.clone());
-    let manifest = input_manifest(build_request, &mut closure)?;
+    let retained = shared_builds.input_closure(
+        build_request,
+        &authentication.backend,
+        &authentication.job_id,
+        attempt_id,
+    );
+    let manifest = input_manifest(
+        build_request,
+        &mut closure,
+        retained.as_deref().map(Vec::as_slice),
+    )?;
     tracing::debug!(
         event = "nomad.callback.manifest.prepared",
         backend = authentication.backend,
@@ -1415,31 +1425,24 @@ impl Drop for OutputImport {
 fn input_manifest(
     build_request: &crate::build::BuildRequest,
     closure: &mut dyn StoreClosureBackend,
+    retained: Option<&[crate::store::closure::ClosurePath]>,
 ) -> io::Result<InputManifest> {
     build_request.validate_for_execution()?;
     let roots = build_request.input_sources().to_vec();
-    let closure_paths = closure.input_closure(&roots)?;
-    let closure_identities = closure_paths
-        .iter()
-        .map(|path| path.store_path.as_bytes())
-        .collect::<std::collections::BTreeSet<_>>();
-    if !roots
-        .iter()
-        .all(|root| closure_identities.contains(root.as_slice()))
-    {
-        return Err(io::Error::other(
-            "Nomad callback input closure is incomplete",
-        ));
-    }
+    let closure_paths = match retained {
+        Some(paths) => std::borrow::Cow::Borrowed(paths),
+        None => std::borrow::Cow::Owned(closure.input_closure(&roots)?),
+    };
+    crate::store::closure::validate_input_closure(&roots, &closure_paths, retained.is_some())?;
     let paths = closure_paths
-        .into_iter()
+        .iter()
         .map(|path| PathManifestEntry {
-            path: path.store_path,
-            nar_hash: path.nar_hash,
+            path: path.store_path.clone(),
+            nar_hash: path.nar_hash.clone(),
             nar_size: path.nar_size,
-            references: path.references,
-            deriver: path.deriver,
-            content_address: path.content_address,
+            references: path.references.clone(),
+            deriver: path.deriver.clone(),
+            content_address: path.content_address.clone(),
         })
         .collect();
     let derivation_path = std::str::from_utf8(build_request.derivation_path())
@@ -1878,6 +1881,350 @@ maximum_diagnostic_bytes = 1024
     }
 
     #[test]
+    fn nomad_execute_publishes_retained_inputs_for_later_durable_ordinal() {
+        nomad_execute_retained_inputs(true);
+    }
+
+    #[test]
+    fn nomad_execute_refreshes_retained_inputs_on_infrastructure_retry() {
+        nomad_execute_retained_inputs(false);
+    }
+
+    fn nomad_execute_retained_inputs(later_ordinal: bool) {
+        use crate::backend::retained_input_tests::{metadata, request};
+        use crate::backend::{BackendKind, BuildExecution};
+        use crate::nomad::backend::{NomadClient, deterministic_job_name_for_attempt};
+        use crate::persistence as db;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct CountingClosure(usize);
+        impl crate::store::closure::StoreClosureBackend for CountingClosure {
+            fn input_closure(
+                &mut self,
+                _: &[Vec<u8>],
+            ) -> io::Result<Vec<crate::store::closure::ClosurePath>> {
+                self.0 += 1;
+                Ok(metadata())
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config_path = directory.path().join("service.toml");
+        let secret = directory.path().join("secret");
+        std::fs::write(&secret, "callback-secret").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[[backends.nomad]]
+[backends.nomad.nomad]
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://{}"
+namespace = "telchar"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+max_retries = 1
+driver = "raw_exec"
+[backends.nomad.nomad.driver_config]
+command = "/bin/true"
+[backends.nomad.nomad.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+[backends.nomad.nomad.transfer_authentication]
+mode = "hmac"
+key_id = "retained"
+secret_file = "{}"
+[backends.nomad.nomad.store]
+mode = "daemon"
+uri = "unix:///missing-worker.sock"
+[backends.nomad.nomad.transfer_limits]
+maximum_manifest_paths = 8
+maximum_manifest_bytes = 4096
+maximum_input_nar_bytes = 4096
+maximum_total_input_bytes = 4096
+maximum_output_nar_bytes = 4096
+maximum_total_output_bytes = 4096
+maximum_frame_metadata_bytes = 4096
+stream_buffer_bytes = 4096
+maximum_live_log_chunk_bytes = 4096
+live_log_queue_bytes = 4096
+transfer_idle_timeout_seconds = 60
+setup_timeout_seconds = 60
+output_collection_timeout_seconds = 60
+maximum_connection_lifetime_seconds = 3600
+authentication_lifetime_seconds = 60
+clock_skew_seconds = 5
+nonce_retention_seconds = 120
+reconnect_timeout_seconds = 60
+maximum_diagnostic_bytes = 1024
+"#,
+                listener.local_addr().unwrap(),
+                secret.display()
+            ),
+        )
+        .unwrap();
+        let config =
+            crate::service::config::ServiceConfig::load_with_environment(&config_path, |_| None)
+                .unwrap();
+        let backend = config.nomad_backends()[0].clone();
+        let request = request();
+        let key = request.shared_build_key();
+        let derivation = std::str::from_utf8(request.derivation_path()).unwrap();
+        let first_job = deterministic_job_name_for_attempt(&backend, key.as_bytes(), 1).unwrap();
+        let database = telchar_test_support::postgres::PostgresFixture::start();
+        db::migrate(database.url()).unwrap();
+        let claim = || {
+            db::claim_shared_build_with_request(
+                database.url(),
+                derivation,
+                &request.shared_build_digest(),
+                "nomad",
+                BackendKind::Nomad,
+                BackendKind::Nomad.capabilities(),
+                Some(&first_job),
+                &request
+                    .expected_outputs()
+                    .iter()
+                    .map(|(_, path)| std::str::from_utf8(path).unwrap())
+                    .collect::<Vec<_>>(),
+                &request,
+            )
+            .unwrap();
+            db::start_shared_build(database.url(), derivation).unwrap();
+        };
+        claim();
+        if later_ordinal {
+            // An independent execution of the same derivation has already terminated.
+            db::complete_shared_build_failure(
+                database.url(),
+                derivation,
+                "fixture",
+                &serde_json::json!({}),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_secs(1));
+            claim();
+        }
+        db::create_build_request(
+            database.url(),
+            "request",
+            derivation,
+            "x86_64-linux",
+            "audit",
+            "quota",
+        )
+        .unwrap();
+        db::create_request_input_leases(
+            database.url(),
+            "request",
+            &[("input".to_owned(), metadata()[0].store_path.clone())],
+        )
+        .unwrap();
+        let initial_attempt = db::read_shared_build_attempt(database.url(), derivation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(initial_attempt.ordinal, if later_ordinal { 2 } else { 1 });
+        let mut execution =
+            BuildExecution::new("request", &request, Duration::from_secs(10)).unwrap();
+        execution.set_target_name("nomad").unwrap();
+        execution.set_input_closure(metadata()).unwrap();
+        let registry = crate::shared_build::SharedBuildRegistry::new();
+        let leader = match registry.acquire(&key) {
+            crate::shared_build::SharedBuildAccess::Leader(leader) => leader,
+            _ => panic!("must lead"),
+        };
+        // Seed predecessor/provisional metadata to prove execution replaces it.
+        registry
+            .retain_input_closure(&execution, &first_job, initial_attempt.attempt_id)
+            .unwrap();
+        let weak = Arc::downgrade(&execution.retained_input_closure().unwrap());
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                let ordinals: &[usize] = if later_ordinal { &[2] } else { &[1, 2] };
+                let mut closure = CountingClosure(0);
+                for &ordinal in ordinals {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).unwrap();
+                        headers.push(byte[0]);
+                    }
+                    let headers = String::from_utf8(headers).unwrap();
+                    assert!(headers.starts_with("POST /v1/jobs?namespace=telchar "), "{headers}");
+                    let length = headers.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ").map(str::to_owned)).unwrap().parse::<usize>().unwrap();
+                    let mut body = vec![0; length];
+                    stream.read_exact(&mut body).unwrap();
+                    let submitted: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let job = deterministic_job_name_for_attempt(&backend, key.as_bytes(), ordinal).unwrap();
+                    assert_eq!(submitted["Job"]["ID"], job);
+                    let attempt = db::read_shared_build_attempt(database.url(), derivation).unwrap().unwrap();
+                    assert_eq!(attempt.ordinal, ordinal as i32);
+                    assert_eq!(attempt.backend_execution_id.as_deref(), Some(job.as_str()));
+                    let retained = registry.input_closure(&request, "nomad", &job, attempt.attempt_id);
+                    let manifest = super::input_manifest(&request, &mut closure, retained.as_deref().map(Vec::as_slice)).unwrap();
+                    assert_eq!(manifest.paths[0].nar_size, 42);
+                    assert_eq!(closure.0, 0, "durable ordinal {ordinal} callback must reuse active metadata");
+                    assert!(registry.input_closure(&request, "foreign", &job, attempt.attempt_id).is_none());
+                    if ordinal > 1 {
+                        assert!(registry.input_closure(&request, "nomad", &first_job, initial_attempt.attempt_id).is_none(), "predecessor/provisional job cannot retrieve successor metadata");
+                        assert!(registry.input_closure(&request, "nomad", &job, attempt.attempt_id - 1).is_none(), "stale attempt cannot retrieve successor metadata");
+                    }
+                    // Missing infrastructure triggers the real execute retry transition;
+                    // final submission failure bounds the fixture without faking a callback result.
+                    let (status, body) = if !later_ordinal && ordinal == 1 { (200, r#"{"EvalID":"first"}"#) } else { (500, "{}") };
+                    write!(stream, "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    if !later_ordinal && ordinal == 1 {
+                        let (mut status, _) = listener.accept().unwrap();
+                        status.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                        let mut headers = Vec::new();
+                        while !headers.ends_with(b"\r\n\r\n") {
+                            let mut byte = [0];
+                            status.read_exact(&mut byte).unwrap();
+                            headers.push(byte[0]);
+                        }
+                        assert!(String::from_utf8(headers).unwrap().starts_with(&format!("GET /v1/job/{job}?")));
+                        status.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+                    }
+                }
+            });
+            let result = NomadClient::new(backend.clone()).unwrap().execute(
+                database.url(),
+                &execution,
+                key.as_bytes(),
+                &mut |_| Ok(()),
+                &registry,
+                4096,
+                &mut || Ok(false),
+            );
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Nomad job submission failed")
+            );
+            server.join().unwrap();
+        });
+        let follower = match registry.acquire(&key) {
+            crate::shared_build::SharedBuildAccess::Follower(follower) => follower,
+            _ => panic!("must follow"),
+        };
+        drop(execution);
+        drop(leader);
+        assert!(
+            weak.upgrade().is_none(),
+            "completion releases metadata despite follower"
+        );
+        drop(follower);
+    }
+
+    #[test]
+    fn active_leader_manifest_reuses_only_exact_execution_inputs_and_drops_metadata() {
+        use crate::backend::retained_input_tests::{metadata, request};
+        struct CountingClosure(usize);
+        impl crate::store::closure::StoreClosureBackend for CountingClosure {
+            fn input_closure(
+                &mut self,
+                _: &[Vec<u8>],
+            ) -> std::io::Result<Vec<crate::store::closure::ClosurePath>> {
+                self.0 += 1;
+                Ok(metadata())
+            }
+        }
+        let request = request();
+        let mut execution =
+            crate::backend::BuildExecution::new("request", &request, Duration::from_secs(1))
+                .unwrap();
+        execution.set_input_closure(metadata()).unwrap();
+        execution.set_target_name("nomad").unwrap();
+        let registry = crate::shared_build::SharedBuildRegistry::new();
+        let leader = match registry.acquire(&request.shared_build_key()) {
+            crate::shared_build::SharedBuildAccess::Leader(leader) => leader,
+            _ => panic!("must lead"),
+        };
+        registry
+            .retain_input_closure(&execution, "exact-job", 7)
+            .unwrap();
+        let mut closure = CountingClosure(0);
+        let retained = registry
+            .input_closure(&request, "nomad", "exact-job", 7)
+            .unwrap();
+        let manifest = super::input_manifest(&request, &mut closure, Some(&retained)).unwrap();
+        assert_eq!(closure.0, 0);
+        assert_eq!(manifest.paths[0].nar_size, 42);
+        assert_eq!(manifest.paths[0].nar_hash, metadata()[0].nar_hash);
+        for (backend, job) in [("foreign", "exact-job"), ("nomad", "other-job")] {
+            assert!(registry.input_closure(&request, backend, job, 7).is_none());
+        }
+        assert!(
+            registry
+                .input_closure(&request, "nomad", "exact-job", 8)
+                .is_none()
+        );
+        let mut different_inputs = request.clone();
+        different_inputs.set_input_closure(vec![]);
+        assert!(
+            registry
+                .input_closure(&different_inputs, "nomad", "exact-job", 7)
+                .is_none()
+        );
+        // Even a key collision/mismatched specification cannot authorize metadata.
+        let mut different_spec = serde_json::to_value(&request).unwrap();
+        different_spec["builder"] =
+            serde_json::json!([47, 98, 105, 110, 47, 102, 97, 108, 115, 101]);
+        let different_spec = serde_json::from_value(different_spec).unwrap();
+        assert!(
+            registry
+                .input_closure(&different_spec, "nomad", "exact-job", 7)
+                .is_none()
+        );
+        // A fresh registry after restart has no authority, even for the same job.
+        assert!(
+            crate::shared_build::SharedBuildRegistry::new()
+                .input_closure(&request, "nomad", "exact-job", 7)
+                .is_none()
+        );
+        let follower = match registry.acquire(&request.shared_build_key()) {
+            crate::shared_build::SharedBuildAccess::Follower(follower) => follower,
+            _ => panic!("must follow"),
+        };
+        let weak = Arc::downgrade(&retained);
+        drop(retained);
+        drop(execution);
+        drop(leader);
+        assert!(
+            registry
+                .input_closure(&request, "nomad", "exact-job", 7)
+                .is_none()
+        );
+        assert!(
+            weak.upgrade().is_none(),
+            "leader lifetime owns metadata, not followers"
+        );
+        drop(follower);
+        let manifest = super::input_manifest(&request, &mut closure, None).unwrap();
+        assert_eq!(closure.0, 1, "recovery reconstructs from gateway");
+        assert_eq!(manifest.paths[0].nar_size, 42);
+        assert!(super::input_manifest(&request, &mut closure, Some(&[])).is_err());
+        let mut incomplete = metadata();
+        incomplete[0].nar_size = 0;
+        assert!(super::input_manifest(&request, &mut closure, Some(&incomplete)).is_err());
+        assert_eq!(
+            closure.0, 1,
+            "invalid retained metadata must not silently reconstruct"
+        );
+    }
+
+    #[test]
     fn inputless_fetch_callback_manifest_starts_transfer() {
         let contents = br#"Derive([("out","/nix/store/11111111111111111111111111111111-fetch","sha256","0000000000000000000000000000000000000000000000000000000000000000")],[],[],"builtin","builtin:fetchurl",[],[("builder","builtin:fetchurl"),("name","fetch"),("out","/nix/store/11111111111111111111111111111111-fetch"),("system","builtin")])"#;
         let target = crate::backend::BackendTarget::new(
@@ -1899,7 +2246,7 @@ maximum_diagnostic_bytes = 1024
             )
             .unwrap(),
         );
-        let manifest = super::input_manifest(&request, &mut closure).unwrap();
+        let manifest = super::input_manifest(&request, &mut closure, None).unwrap();
         assert!(manifest.paths.is_empty());
         assert_eq!(manifest.build.system, "builtin");
         crate::nomad::protocol::TransferSession::new(

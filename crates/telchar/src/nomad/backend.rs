@@ -633,6 +633,7 @@ impl NomadClient {
                 &profile,
                 logs,
                 &mut live_logs,
+                shared_builds,
                 cancelled,
             );
             if let Err(
@@ -752,6 +753,7 @@ impl NomadClient {
         profile: &crate::service::config::SelectedNomadResourceProfile<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         live_logs: &mut crate::shared_build::SharedBuildLogReceiver,
+        shared_builds: &crate::shared_build::SharedBuildRegistry,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> Result<BuildResult, NomadAttemptFailure> {
         if Instant::now() >= deadline {
@@ -797,6 +799,9 @@ impl NomadClient {
                 error,
             ))
         })?;
+        shared_builds
+            .retain_input_closure(execution, &execution_id, obligation)
+            .map_err(NomadAttemptFailure::Terminal)?;
         let submission = self
             .submit_rendered_job(
                 shared_build_key,

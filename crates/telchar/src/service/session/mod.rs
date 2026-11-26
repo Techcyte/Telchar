@@ -92,13 +92,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let cached_build = crate::persistence::read_shared_build(database, std::str::from_utf8(admitted.derivation_path()).map_err(|_| io::Error::other("invalid derivation path"))?)
                     .map_err(|_| io::Error::other("cached build lookup failed"))?;
                 let mut cached_input_roots = None;
+                let mut cached_input_closure = None;
                 if cached_build.is_some_and(|build| build.state == crate::persistence::SharedBuildState::Succeeded && build.request_digest != admitted.shared_build_digest()) {
                     let mut roots = store_export.temporary_roots()?;
                     for path in admitted.input_sources() {
                         roots.retain(path)?;
                     }
                     let closure = store_closure.input_closure(admitted.input_sources())?;
-                    admitted.set_input_closure(closure.into_iter().map(|path| path.store_path.into_bytes()).collect());
+                    admitted.set_input_closure(closure.iter().map(|path| path.store_path.as_bytes().to_vec()).collect());
+                    cached_input_closure = Some(closure);
                     cached_input_roots = Some(roots);
                 }
                 let cached = return_cached_outputs(
@@ -118,7 +120,6 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         return reject(&mut output, "cached-build-rejected", "cached build metadata could not be validated");
                     }
                 };
-                drop(cached_input_roots);
                 if cached {
                     if let Some(build_audit) = build_audit.as_ref() {
                         build_audit.completed("already-valid", admitted.expected_outputs().iter()
@@ -271,7 +272,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 }
-                let closure = match crate::service::activity::run("input-closure", || store_closure.input_closure(admitted.input_sources())) {
+                let closure = match crate::service::activity::run("input-closure", || admission_input_closure(store_closure, admitted.input_sources(), cached_input_closure.take())) {
                     Ok(closure) => closure,
                     Err(error) => {
                         let (path, path_kind) = crate::store::closure::failure_path(&error)
@@ -305,8 +306,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 admitted.set_input_closure(closure.iter().map(|path| path.store_path.as_bytes().to_vec()).collect());
-                let producer_input_closure: std::sync::Arc<[_]> = closure.into();
-                let input_leases = producer_input_closure
+                let input_leases = closure
                     .iter()
                     .enumerate()
                     .map(|(index, path)| {
@@ -480,6 +480,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             return Err(error);
                         }
                     };
+                execution.set_input_closure(closure)?;
+                drop(cached_input_roots);
                 execution.set_trace_context(telchar_telemetry::TraceContext::capture_current());
                 let requester_detached = std::cell::Cell::new(false);
                 let durable_execution_owned = std::cell::Cell::new(false);
@@ -727,7 +729,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     // requests for the derivation would wait on it until they time out.
                                     (|| -> io::Result<_> {
                                     execution.set_producers(crate::persistence::read_output_producers(
-                                        database, &producer_input_closure,
+                                        database, execution.input_closure().ok_or_else(|| io::Error::other("retained input closure is unavailable"))?,
                                     )?);
                                     let permit = build_executor
                                         .reserve_build(&execution, &required_features)?
@@ -2230,6 +2232,17 @@ impl<W: Write> Write for NarResponseWriter<'_, W> {
     }
 }
 
+fn admission_input_closure(
+    store: &mut dyn crate::store::closure::StoreClosureBackend,
+    roots: &[Vec<u8>],
+    retained: Option<Vec<crate::store::closure::ClosurePath>>,
+) -> io::Result<Vec<crate::store::closure::ClosurePath>> {
+    match retained {
+        Some(closure) => Ok(closure),
+        None => store.input_closure(roots),
+    }
+}
+
 fn run_cached_output_phase<T>(
     phase: &'static str,
     operation: impl FnOnce() -> io::Result<T>,
@@ -2884,5 +2897,36 @@ mod timeout_diagnostic_tests {
 
             assert_eq!(execution_timeout_phase(&error), Some(phase));
         }
+    }
+}
+
+#[cfg(test)]
+mod admission_closure_tests {
+    use super::*;
+    use crate::backend::retained_input_tests::{metadata, request};
+
+    #[test]
+    fn cached_normalization_fallthrough_reuses_first_closure_without_querying_again() {
+        struct CountingClosure(usize);
+        impl crate::store::closure::StoreClosureBackend for CountingClosure {
+            fn input_closure(
+                &mut self,
+                _: &[Vec<u8>],
+            ) -> io::Result<Vec<crate::store::closure::ClosurePath>> {
+                self.0 += 1;
+                Ok(metadata())
+            }
+        }
+        let mut store = CountingClosure(0);
+        let request = request();
+        let initial = admission_input_closure(&mut store, request.input_sources(), None).unwrap();
+        assert_eq!(store.0, 1);
+        let reused =
+            admission_input_closure(&mut store, request.input_sources(), Some(initial)).unwrap();
+        assert_eq!(reused, metadata());
+        assert_eq!(
+            store.0, 1,
+            "cache miss must not repeat normalization traversal"
+        );
     }
 }

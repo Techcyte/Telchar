@@ -58,6 +58,11 @@ impl SharedBuildLeader<'_> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         active_builds.remove(&self.build_key);
+        self.active
+            .input_closure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         crate::service::metrics::shared_build_in_flight_finished();
         self.completed = true;
     }
@@ -330,6 +335,67 @@ impl SharedBuildRegistry {
         active.map_or(0, |active| active.publish_log(chunk))
     }
 
+    /// Refresh only after the durable exact attempt identity is finalized, before submission.
+    pub(crate) fn retain_input_closure(
+        &self,
+        execution: &crate::backend::BuildExecution<'_>,
+        execution_id: &str,
+        attempt_id: i64,
+    ) -> std::io::Result<()> {
+        if execution_id.is_empty() || attempt_id <= 0 {
+            return Err(std::io::Error::other("missing execution attempt identity"));
+        }
+        let Some(paths) = execution.retained_input_closure() else {
+            return Ok(());
+        };
+        let backend = execution
+            .target_name()
+            .ok_or_else(|| std::io::Error::other("missing backend identity"))?;
+        let active_builds = self.active.lock().unwrap_or_else(|p| p.into_inner());
+        let active = active_builds
+            .get(&execution.build().shared_build_key())
+            .ok_or_else(|| std::io::Error::other("missing active shared build"))?;
+        *active
+            .input_closure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(ActiveInputClosure {
+            backend: backend.to_owned(),
+            execution_id: execution_id.to_owned(),
+            attempt_id,
+            build: execution.build().clone(),
+            paths,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn input_closure(
+        &self,
+        build: &crate::build::BuildRequest,
+        backend: &str,
+        execution_id: &str,
+        attempt_id: i64,
+    ) -> Option<Arc<Vec<crate::store::closure::ClosurePath>>> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&build.shared_build_key())
+            .cloned()?;
+        let retained = active
+            .input_closure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        retained
+            .as_ref()
+            .filter(|retained| {
+                retained.backend == backend
+                    && retained.execution_id == execution_id
+                    && retained.attempt_id == attempt_id
+                    && retained.build == *build
+            })
+            .map(|retained| Arc::clone(&retained.paths))
+    }
+
     pub fn active_build_count(&self) -> usize {
         self.active
             .lock()
@@ -352,9 +418,18 @@ impl SharedBuildRegistry {
     }
 }
 
+struct ActiveInputClosure {
+    backend: String,
+    execution_id: String,
+    attempt_id: i64,
+    build: crate::build::BuildRequest,
+    paths: Arc<Vec<crate::store::closure::ClosurePath>>,
+}
+
 #[derive(Default)]
 struct ActiveBuild {
     state: Mutex<ActiveBuildState>,
+    input_closure: Mutex<Option<ActiveInputClosure>>,
     completed: Condvar,
     waiting: Mutex<usize>,
     log_subscribers: Mutex<Vec<Weak<SharedBuildLogSubscription>>>,

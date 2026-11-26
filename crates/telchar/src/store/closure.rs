@@ -85,6 +85,43 @@ pub struct ClosurePath {
     pub content_address: Option<String>,
 }
 
+/// Retained metadata must describe the exact normalized admitted set; reconstruction
+/// may expand unnormalized manual/recovery roots, but cannot omit roots or references.
+pub(crate) fn validate_input_closure(
+    roots: &[Vec<u8>],
+    closure: &[ClosurePath],
+    exact: bool,
+) -> io::Result<()> {
+    let paths = closure
+        .iter()
+        .map(|path| path.store_path.as_bytes())
+        .collect::<BTreeSet<_>>();
+    let root_paths = roots.iter().map(Vec::as_slice).collect::<BTreeSet<_>>();
+    if paths.len() != closure.len()
+        || closure.len() > MAXIMUM_CLOSURE_PATHS
+        || (exact && paths != root_paths)
+        || !roots.iter().all(|root| paths.contains(root.as_slice()))
+        || closure.iter().any(|path| {
+            path.nar_size == 0
+                || !path
+                    .references
+                    .iter()
+                    .all(|reference| paths.contains(reference.as_bytes()))
+        })
+    {
+        return Err(query_error(ClosureFailurePhase::Metadata));
+    }
+    let mut bytes = 0_usize;
+    for path in closure {
+        validate_store_path(path.store_path.as_bytes())?;
+        bytes = bytes
+            .checked_add(path.store_path.len())
+            .filter(|bytes| *bytes <= MAXIMUM_CLOSURE_BYTES)
+            .ok_or_else(|| query_error(ClosureFailurePhase::Metadata))?;
+    }
+    Ok(())
+}
+
 pub trait StoreClosureBackend: Send {
     fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<ClosurePath>>;
 }

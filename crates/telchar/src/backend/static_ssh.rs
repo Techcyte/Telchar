@@ -12,7 +12,7 @@ use nix_worker_protocol::{
 
 use crate::backend::{BuildBackend, BuildExecution, BuildResult, BuildStatus, OutputTrust};
 use crate::service::config::StaticSshBackendConfig;
-use crate::store::closure::{GatewayStoreClosureBackend, StoreClosureBackend};
+use crate::store::closure::GatewayStoreClosureBackend;
 use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 #[path = "static_ssh/health.rs"]
@@ -266,7 +266,7 @@ impl StaticSshBackend {
         let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
         let gateway = self.gateway.clone();
         let object_admission = self.object_admission.clone();
-        let build = execution.build();
+
         let deadline = Instant::now() + execution.timeout();
 
         let result = std::thread::scope(|scope| {
@@ -274,7 +274,7 @@ impl StaticSshBackend {
                 let result = execute_remote_build(
                     WorkerStream { stdin, stdout },
                     &gateway,
-                    build,
+                    execution,
                     &log_sender,
                     &object_admission,
                 );
@@ -340,10 +340,11 @@ impl BuildBackend for StaticSshBackend {
 fn execute_remote_build(
     stream: WorkerStream,
     gateway: &GatewayStoreEndpoint,
-    build: &crate::build::BuildRequest,
+    execution: &BuildExecution<'_>,
     logs: &std::sync::mpsc::SyncSender<Vec<u8>>,
     object_admission: &crate::service::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<BuildResult> {
+    let build = execution.build();
     let connected_started = Instant::now();
     let mut remote = WorkerClient::connect(stream)
         .map_err(|_| io::Error::other("static SSH worker protocol failed"))?;
@@ -360,7 +361,7 @@ fn execute_remote_build(
         root_count = roots.len(),
         "static SSH closure query started"
     );
-    let closure = closure.input_closure(&roots)?;
+    let closure = execution.resolve_input_closure(&mut closure)?;
     tracing::trace!(
         event = "backend.static_ssh.closure.completed",
         path_count = closure.len(),
@@ -373,7 +374,7 @@ fn execute_remote_build(
         .collect::<Vec<_>>();
     let missing_started = Instant::now();
     let missing = remote.query_missing(&closure_paths)?;
-    let inputs = select_missing_inputs(closure, &missing)?;
+    let inputs = select_missing_inputs(&closure, &missing)?;
     tracing::debug!(
         event = "backend.static_ssh.inputs.selected",
         closure_path_count = closure_paths.len(),
@@ -494,7 +495,7 @@ fn execute_remote_build(
 }
 
 fn select_missing_inputs(
-    closure: Vec<crate::store::closure::ClosurePath>,
+    closure: &[crate::store::closure::ClosurePath],
     missing: &nix_worker_protocol::WorkerMissingPaths,
 ) -> io::Result<Vec<crate::store::closure::ClosurePath>> {
     let missing_paths = missing
@@ -513,8 +514,9 @@ fn select_missing_inputs(
         ));
     }
     let selected = closure
-        .into_iter()
+        .iter()
         .filter(|path| missing_paths.contains(path.store_path.as_bytes()))
+        .cloned()
         .collect::<Vec<_>>();
     if selected.len() != missing_paths.len() {
         return Err(io::Error::new(
@@ -1029,7 +1031,7 @@ mod tests {
             nar_size: 0,
         };
         let selected = select_missing_inputs(
-            vec![parent_path, closure_path(present), closure_path(dependency)],
+            &[parent_path, closure_path(present), closure_path(dependency)],
             &remote,
         )
         .expect("missing input order resolves");
@@ -1052,7 +1054,7 @@ mod tests {
             download_size: 0,
             nar_size: 0,
         };
-        let error = select_missing_inputs(vec![first_path, second_path], &remote)
+        let error = select_missing_inputs(&[first_path, second_path], &remote)
             .expect_err("cyclic missing inputs reject before transfer");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
@@ -1107,7 +1109,7 @@ mod tests {
             nar_size: 0,
         };
 
-        let selected = select_missing_inputs(closure, &remote).expect("missing inputs select");
+        let selected = select_missing_inputs(&closure, &remote).expect("missing inputs select");
 
         assert_eq!(
             selected
