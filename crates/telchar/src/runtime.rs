@@ -614,7 +614,26 @@ fn run_daemon() -> io::Result<()> {
     telchar::service::metrics::record_shared_build_operational_counts(operational_counts);
     let monitoring_derivations = reconciliation.monitoring_derivations;
     let backends = telchar::backend::routing::ReloadableBackends::new(configured_backends);
-    let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
+    let mut registry = telchar::shared_build::SharedBuildRegistry::new();
+    if let Some(policy) = config.log_retention() {
+        let logs = telchar::service::archive::AttemptLogs::new(
+            policy.directory.clone(),
+            policy.maximum_bytes,
+            policy.maximum_queue_bytes,
+            policy.maximum_captures,
+            policy.maximum_spool_bytes,
+        )
+        .with_destination(policy.destination.clone(), policy.s3.clone())
+        .with_retention_days(policy.retention_days as i64);
+        if logs.reconcile_interrupted(&database).is_err() {
+            tracing::warn!(
+                event = "log.archive.recovery_deferred",
+                "interrupted log reconciliation deferred"
+            );
+        }
+        registry = registry.with_attempt_logs(logs);
+    }
+    let shared_builds = Arc::new(registry);
     let scheduling_config = config.clone();
     let shared_build_scheduler = Arc::new(
         telchar::shared_build::scheduler::SharedBuildScheduler::new(
@@ -792,6 +811,19 @@ fn run_daemon() -> io::Result<()> {
             },
         )
     }).transpose()?;
+    let log_registry = Arc::clone(&shared_builds);
+    let log_database = database.clone();
+    let mut log_delivery_service =
+        telchar::service::daemon_services::MaintenanceService::start_with_ownership(
+            maintenance_interval,
+            Arc::clone(&singleton_ownership),
+            move || {
+                if let Err(error) = log_registry.recover_attempt_logs(&log_database) {
+                    tracing::warn!(event = "log.archive.delivery_deferred", error_kind = ?error.kind(), "log delivery remains pending");
+                }
+                Ok(())
+            },
+        )?;
     let mut hook_delivery_service = telchar::service::daemon_services::HookDeliveryService::start(
         Arc::clone(&singleton_ownership),
         database.clone(),
@@ -994,6 +1026,7 @@ fn run_daemon() -> io::Result<()> {
             )?;
             return Err(error);
         }
+        log_delivery_service.check()?;
         if let Some(service) = history_service.as_mut() {
             service.check()?;
         }

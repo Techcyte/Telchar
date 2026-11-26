@@ -100,6 +100,7 @@ pub(super) struct BuildReport {
     expected_outputs: Vec<String>,
     failure_classification: Option<String>,
     attempt: Option<AttemptReport>,
+    log_archive: Option<serde_json::Value>,
 }
 
 impl BuildReport {
@@ -123,6 +124,7 @@ impl BuildReport {
             expected_outputs: build.expected_outputs,
             failure_classification: build.failure_classification,
             attempt,
+            log_archive: telchar::persistence::read_attempt_log_archive(database, derivation_path)?,
         }))
     }
 }

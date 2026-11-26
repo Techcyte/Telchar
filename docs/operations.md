@@ -216,6 +216,37 @@ destination = "/var/lib/telchar/history"
 
 The destination must already exist and be accessible only to appropriate operators; history includes organizational identities, paths and result metadata. Alternatively set `discard = true` without `destination` to delete eligible history without archiving. Ages range from 1 through 3650 days; each maintenance pass considers at most `maximum_builds` (1 through 256). Live output-cache entries, request attachments/leases, unresolved executions and pending hook roots prevent deletion. Historical MicroVM references remain protected. Filesystem delivery synchronizes immutable content before deletion; revalidation preserves records changed during delivery. Storage failure emits `history.retention.failed` and defers deletion without failing builds. Oversized snapshots remain in PostgreSQL. Operator-owned filesystem lifecycle can remove archives; a recorded location is not a guarantee of perpetual availability.
 
+Archive spool and filesystem destinations require responsive, operator-owned local filesystems with no symlink components. Archive I/O is separate from build execution and core maintenance, but kernel-level filesystem stalls can delay startup or joined daemon shutdown, including after ownership loss. Filesystem syscalls have no hard application timeout; an external supervisor must handle a stuck daemon. Ordinary storage errors defer archival without changing build results. Archive helper-process isolation is not provided.
+
+Build-log capture is separately disabled unless `[log_retention]` is configured; changes require restart:
+
+```toml
+[log_retention]
+retention_days = 7
+directory = "/var/lib/telchar/log-spool"
+maximum_bytes = 1048576
+maximum_queue_bytes = 1048576
+maximum_captures = 4
+maximum_spool_bytes = 16777216
+# destination = "/var/lib/telchar/log-archive"
+```
+
+Provision a private spool directory on persistent local storage. Capture precedes live-reader queues for local, static SSH and validated Nomad callback attempts. Zstd files and PostgreSQL references identify exact attempts; queue loss, byte truncation and interrupted streams produce incomplete logs. Capture/storage failures do not change build results. Per-attempt bytes are bounded to 8 MiB, queue bytes to 16 MiB, concurrency to 64 and spool budget to 1 TiB. Admission conservatively reserves twice the per-attempt bound plus 64 KiB per capture. Exhaustion skips capture, not execution.
+
+Without a destination, terminal local logs expire after `retention_days` (1–3650, measured from capture creation); metadata becomes `expired` before deletion. Active attempts and pending destination delivery do not expire. With a destination, local spool is reclaimed only after immutable delivery and durable acknowledgement. Cleanup retries after restart. Destination object lifecycle remains operator-owned; references do not guarantee availability after external deletion. Treat build output as sensitive. Interrupted temporary files and unresolved delivery can consume spool space; monitor the directory and archive warnings.
+
+Either archive policy can use an S3-compatible destination instead of `destination`:
+
+```toml
+[log_retention.s3]
+endpoint = "https://objects.example.org/build-archives/"
+region = "us-east-1"
+credentials_file = "/run/credentials/telchar/archive.json"
+timeout_seconds = 30
+```
+
+Use `[history_retention.s3]` for history. Endpoint includes the bucket/prefix; HTTPS required except loopback test endpoints. Redirects are rejected. Credentials file must be private and contains JSON `access_key_id`, `secret_access_key`, and optional `session_token`; credential rotation is read per delivery. Timeout is bounded to 300 seconds. Immutable conditional writes require either creation acknowledgement or a bounded read confirming identical existing bytes. Publication errors retain pending logs/history and retry; no bucket creation or lifecycle administration is performed.
+
 Nomad allocation stores are separate operator policy. See [Nomad backend](nomad.md).
 
 ## Ingress and clients
@@ -278,7 +309,7 @@ telchar operator backends
 telchar operator recovery --limit 64
 ```
 
-`config-check` validates configuration without requiring PostgreSQL. Other commands require the configured database and an already migrated schema. `queue` reports durable queue order. `build` reports one derivation's durable state and current attempt. `backends` combines configured capacity with active durable builds and performs the same bounded SSH/Nix readiness probe for static SSH entries. `recovery` reports bounded active work and its persisted recovery mode. Limits default to 64 and may not exceed 256.
+`config-check` validates configuration without requiring PostgreSQL. Other commands require the configured database and an already migrated schema. `queue` reports durable queue order. `build` reports one derivation's durable state and current attempt. Its `log_archive` field is null when that attempt has no capture record; otherwise it reports exact `attempt_id`, `state`, `complete`, `uncompressed_bytes`, `object_key` and compressed-byte `sha256`. States distinguish `capturing`, `pending`, `available`, `failed` and `expired`. A reference does not guarantee external object availability; `complete = false` means output loss or interruption, not build failure. `backends` combines configured capacity with active durable builds and performs the same bounded SSH/Nix readiness probe for static SSH entries. `recovery` reports bounded active work and its persisted recovery mode. Limits default to 64 and may not exceed 256.
 
 ## Client audit
 
@@ -301,7 +332,7 @@ SSH authentication details must come from sshd `ExposeAuthInfo`; the adapter cle
 
 ## Logs and telemetry
 
-Build logs are bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. PostgreSQL stores no log bytes.
+Client build-log delivery is bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. Optional `[log_retention]` archives are independent of client delivery; PostgreSQL stores metadata/references, not log bytes.
 
 Client log delivery is lossy under backpressure. An attachment retains at most one pending serialized log frame; additional output is omitted while that frame cannot be sent. Oversized chunks are capped at the worker protocol message limit. A resumed reader receives a truncation marker before subsequent output. A partially sent frame is completed before control or result bytes, preserving protocol framing. Local and SSH executors forward at most eight queued chunks before checking execution control again.
 

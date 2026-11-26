@@ -3,6 +3,51 @@
 use super::*;
 
 #[test]
+fn configured_log_capture_finishes_while_frontend_is_unread() {
+    let root = tempfile::tempdir().unwrap();
+    let logs = root.path().join("logs");
+    fs::create_dir(&logs).unwrap();
+    let config = root.path().join("service.toml");
+    fs::write(&config, format!("[log_retention]\nretention_days = 7\ndirectory = '{}'\nmaximum_bytes = 1048576\nmaximum_queue_bytes = 1048576\nmaximum_captures = 1\nmaximum_spool_bytes = 4194304\n[backends.local]\nname = 'local'\nsystem = 'x86_64-linux'\nmaximum_concurrent_builds = 1\n", logs.display())).unwrap();
+    let helper = root.path().join("helper");
+    fs::write(&helper, "#!/bin/sh\ncat >/dev/null\nprintf 'archived-build-output' >&2\nprintf '%s' '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}'\n").unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_CONFIG", config.display().to_string()),
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+        ],
+    );
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
+    input.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let receipt = loop {
+        let rows = fixture.database.connect().query("SELECT l.object_key, l.complete FROM attempt_log_archives l JOIN shared_build_attempts a USING (attempt_id) WHERE l.state = 'available'", &[]).unwrap();
+        if let Some(row) = rows.first() {
+            break (row.get::<_, String>(0), row.get::<_, bool>(1));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "capture did not finish independently of unread client"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(receipt.1);
+    assert_eq!(
+        zstd::stream::decode_all(fs::File::open(receipt.0).unwrap()).unwrap(),
+        b"archived-build-output"
+    );
+    read_build_success(output).unwrap();
+    drop(input);
+    assert!(fixture.frontend.wait().unwrap().success());
+    fixture.finish();
+}
+
+#[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
     for level in ["info", "debug", "trace"] {
         check_build_logs(level, true);

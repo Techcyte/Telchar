@@ -247,7 +247,7 @@ uri = "{worker_store_uri}"
             },
         )
     } else {
-        "printf connected-nomad > $out".to_owned()
+        "printf connected-nomad-log >&2; printf connected-nomad > $out".to_owned()
     };
     let derivation = format!(
         r#"Derive([("out","{output}","","")],[],["{input}"],"x86_64-linux","/bin/sh",["-e","-c","{script}"],[("out","{output}"),("system","x86_64-linux"),("builder","/bin/sh"),("name","nomad-trace")])"#
@@ -345,6 +345,20 @@ uri = "{worker_store_uri}"
     let hook_delivery_database = db::Database::connect(&database)
         .unwrap()
         .with_post_build_hooks(true);
+    let log_attempt = db::read_shared_build_attempt(&database, drv)
+        .unwrap()
+        .unwrap();
+    let log_directory = root.join("logs");
+    std::fs::create_dir(&log_directory).unwrap();
+    let registry = telchar::shared_build::SharedBuildRegistry::new().with_attempt_logs(
+        telchar::service::archive::AttemptLogs::new(
+            log_directory.clone(),
+            1048576,
+            1048576,
+            4,
+            8388608,
+        ),
+    );
     let mut callback_service = telchar::nomad::callback_service::NomadCallbackService::start(
         callback,
         config.nomad_callback().unwrap().clone(),
@@ -352,7 +366,7 @@ uri = "{worker_store_uri}"
         config.nomad_backends().to_vec(),
         endpoint.clone(),
         Duration::from_secs(60),
-        Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+        Arc::new(registry),
         Some(hook_delivery_store.clone()),
         telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     )
@@ -435,6 +449,25 @@ uri = "{worker_store_uri}"
         std::thread::sleep(Duration::from_millis(10));
     }
     let result = child.wait_with_output().unwrap();
+    if !stale {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut connection = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            let row = connection.query_opt("SELECT object_key, complete FROM attempt_log_archives WHERE attempt_id = $1 AND state = 'available'", &[&log_attempt.attempt_id]).unwrap();
+            if let Some(row) = row {
+                assert!(row.get::<_, bool>(1));
+                let path: String = row.get(0);
+                let bytes = zstd::stream::decode_all(std::fs::File::open(path).unwrap()).unwrap();
+                assert!(String::from_utf8_lossy(&bytes).contains("connected-nomad-log"));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Nomad callback log was not archived"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     if let Some(successor) = successor {
         if failed_build == Some(true) {
             assert!(

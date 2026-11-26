@@ -61,6 +61,7 @@ pub fn sweep_terminal_history(
                AND NOT EXISTS (SELECT 1 FROM shared_build_attempts a
                    WHERE a.derivation_path = b.derivation_path AND (
                      a.state NOT IN ('succeeded', 'failed')
+                     OR EXISTS (SELECT 1 FROM attempt_log_archives l WHERE l.attempt_id = a.attempt_id AND (l.state IN ('capturing', 'pending') OR l.spool_name IS NOT NULL))
                      OR a.completed_at >= transaction_timestamp() - make_interval(secs => $1)
                      OR EXISTS (SELECT 1 FROM nomad_execution_obligations n WHERE n.attempt_id = a.attempt_id AND n.resolved_at IS NULL)
                      OR EXISTS (SELECT 1 FROM post_build_hooks_outbox h WHERE h.attempt_id = a.attempt_id AND (h.state = 'pending' OR h.roots_released_at IS NULL))
@@ -101,6 +102,7 @@ pub fn sweep_terminal_history(
                 "SELECT n.attempt_id FROM nomad_execution_obligations n JOIN shared_build_attempts a USING (attempt_id) WHERE derivation_path = $1 ORDER BY n.attempt_id LIMIT 257 FOR UPDATE OF n",
                 "SELECT h.attempt_id FROM post_build_hooks_outbox h JOIN shared_build_attempts a USING (attempt_id) WHERE derivation_path = $1 ORDER BY h.attempt_id LIMIT 257 FOR UPDATE OF h",
                 "SELECT h.attempt_id FROM post_build_hook_roots h JOIN shared_build_attempts a USING (attempt_id) WHERE derivation_path = $1 ORDER BY h.attempt_id, h.output_index LIMIT 257 FOR UPDATE OF h",
+                "SELECT l.attempt_id FROM attempt_log_archives l JOIN shared_build_attempts a USING (attempt_id) WHERE derivation_path = $1 ORDER BY l.attempt_id LIMIT 257 FOR UPDATE OF l",
             ] {
                 transaction
                     .query(query, &[&path])
@@ -109,6 +111,7 @@ pub fn sweep_terminal_history(
             let pending: bool = transaction.query_one(
                 "SELECT EXISTS (SELECT 1 FROM shared_build_attempts a WHERE derivation_path = $1 AND (
                     EXISTS (SELECT 1 FROM nomad_execution_obligations n WHERE n.attempt_id = a.attempt_id AND n.resolved_at IS NULL)
+                    OR EXISTS (SELECT 1 FROM attempt_log_archives l WHERE l.attempt_id = a.attempt_id AND (l.state IN ('capturing', 'pending') OR l.spool_name IS NOT NULL))
                     OR EXISTS (SELECT 1 FROM post_build_hooks_outbox h WHERE h.attempt_id = a.attempt_id AND (h.state = 'pending' OR h.roots_released_at IS NULL))
                     OR EXISTS (SELECT 1 FROM post_build_hook_roots h WHERE h.attempt_id = a.attempt_id AND h.released_at IS NULL)))",
                 &[&path],
@@ -134,6 +137,7 @@ pub fn sweep_terminal_history(
                 break;
             }
             for sql in [
+                "DELETE FROM attempt_log_archives WHERE attempt_id IN (SELECT attempt_id FROM shared_build_attempts WHERE derivation_path = $1)",
                 "DELETE FROM post_build_hook_roots WHERE attempt_id IN (SELECT attempt_id FROM shared_build_attempts WHERE derivation_path = $1)",
                 "DELETE FROM post_build_hooks_outbox WHERE attempt_id IN (SELECT attempt_id FROM shared_build_attempts WHERE derivation_path = $1)",
                 "DELETE FROM nomad_execution_obligations WHERE attempt_id IN (SELECT attempt_id FROM shared_build_attempts WHERE derivation_path = $1)",
@@ -156,19 +160,24 @@ pub fn sweep_terminal_history(
 fn history_snapshot(transaction: &mut DatabaseTransaction<'_>, path: &str) -> io::Result<Vec<u8>> {
     const MAXIMUM_RECORDS: i64 = 256;
     const MAXIMUM_BYTES: usize = 8 * 1024 * 1024;
-    let build: String = transaction
+    let build: Option<String> = transaction
         .query_one(
-            "SELECT row_to_json(record)::text FROM (SELECT derivation_path, request_digest, state, backend_name, backend_kind, execution_recovery, cancellation, log_recovery, backend_execution_id, expected_outputs, result_metadata, failure_classification, created_at, started_at, collecting_at, completed_at, expires_at, quota_subject, queue_position, queued_at FROM shared_builds WHERE derivation_path = $1) record",
+            "SELECT CASE WHEN octet_length(row_to_json(record)::text) < 8388608 THEN row_to_json(record)::text ELSE NULL END FROM (SELECT derivation_path, request_digest, state, backend_name, backend_kind, execution_recovery, cancellation, log_recovery, backend_execution_id, expected_outputs, result_metadata, failure_classification, created_at, started_at, collecting_at, completed_at, expires_at, quota_subject, queue_position, queued_at FROM shared_builds WHERE derivation_path = $1) record",
             &[&path],
         )
         .map_err(io::Error::other)?
         .get(0);
+    let build = build.ok_or_else(|| io::Error::other("history snapshot byte limit exceeded"))?;
     let mut document = serde_json::json!({
         "schema_version": 1,
         "build": serde_json::from_str::<serde_json::Value>(&build).map_err(io::Error::other)?,
     });
     let mut bytes = build.len();
     for (name, query) in [
+        (
+            "logs",
+            "SELECT row_to_json(record)::text FROM (SELECT l.attempt_id, l.state, l.complete, l.uncompressed_bytes, l.object_key, l.sha256, l.created_at, l.updated_at FROM attempt_log_archives l JOIN shared_build_attempts a USING (attempt_id) WHERE derivation_path = $1 ORDER BY l.attempt_id LIMIT $2) record",
+        ),
         (
             "attempts",
             "SELECT row_to_json(record)::text FROM (SELECT attempt_id, derivation_path, ordinal, backend_name, backend_kind, backend_execution_id, state, created_at, started_at, collecting_at, completed_at, traceparent, tracestate FROM shared_build_attempts WHERE derivation_path = $1 ORDER BY ordinal LIMIT $2) record",

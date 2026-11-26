@@ -46,6 +46,56 @@ fn terminal_history_survives_delivery_failure_and_archives_before_deletion() {
     fixture.connect().batch_execute(
         "UPDATE shared_builds SET created_at = now() - interval '3 days', started_at = now() - interval '3 days', completed_at = now() - interval '2 days', expires_at = now() - interval '1 day'; UPDATE shared_build_attempts SET created_at = now() - interval '3 days', started_at = now() - interval '3 days', completed_at = now() - interval '2 days'",
     ).unwrap();
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .unwrap()
+        .unwrap();
+    telchar::persistence::begin_log_archive(fixture.url(), attempt.attempt_id).unwrap();
+    telchar::persistence::stage_log_archive(
+        fixture.url(),
+        attempt.attempt_id,
+        true,
+        10,
+        &format!("{}.log.zst", attempt.attempt_id),
+        &"a".repeat(64),
+    )
+    .unwrap();
+    telchar::persistence::finish_log_archive(
+        fixture.url(),
+        attempt.attempt_id,
+        true,
+        10,
+        "archive/log.zst",
+        &"a".repeat(64),
+    )
+    .unwrap();
+    assert_eq!(
+        telchar::persistence::archive_terminal_history(fixture.url(), retention, 1, |_, _| panic!(
+            "retained spool must protect history"
+        ))
+        .unwrap(),
+        0
+    );
+    telchar::persistence::release_log_spool(fixture.url(), attempt.attempt_id).unwrap();
+    assert_eq!(
+        telchar::persistence::archive_terminal_history(fixture.url(), retention, 1, |_, _| {
+            fixture
+                .connect()
+                .execute(
+                    "UPDATE attempt_log_archives SET spool_name = 'retained.log.zst'",
+                    &[],
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap(),
+        0
+    );
+    assert!(
+        telchar::persistence::read_shared_build(fixture.url(), derivation)
+            .unwrap()
+            .is_some()
+    );
+    telchar::persistence::release_log_spool(fixture.url(), attempt.attempt_id).unwrap();
     std::fs::write(destination.join("history"), b"unavailable directory").unwrap();
     assert!(
         telchar::persistence::archive_terminal_history(fixture.url(), retention, 1, deliver)
