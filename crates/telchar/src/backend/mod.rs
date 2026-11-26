@@ -381,7 +381,7 @@ impl BackendPool {
         required_features: &[&str],
         timeout: Duration,
         available: impl Fn(&BackendTarget) -> bool,
-        locality: impl Fn(&BackendTarget) -> usize,
+        locality: impl Fn(&BackendTarget) -> u64,
     ) -> io::Result<BackendPermit> {
         let compatible = self
             .inner

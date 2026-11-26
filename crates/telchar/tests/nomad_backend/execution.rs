@@ -1251,6 +1251,7 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         backend_name: "nomad-test".into(),
         backend_kind: BackendKind::Nomad,
         location: Some("producer-node".into()),
+        nar_size: 1,
     }]);
     execution.set_trace_context(
         telchar_telemetry::TraceContext::new(

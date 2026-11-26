@@ -543,7 +543,9 @@ impl BackendExecutor {
                             producer.backend_name == target.name()
                                 && producer.backend_kind == target.kind()
                         })
-                        .count()
+                        .fold(0_u64, |bytes, producer| {
+                            bytes.saturating_add(producer.nar_size)
+                        })
                 },
             )
             .map(Some)

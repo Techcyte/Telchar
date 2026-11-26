@@ -5,6 +5,8 @@ pub struct OutputProducer {
     pub backend_name: String,
     pub backend_kind: BackendKind,
     pub location: Option<String>,
+    /// Advisory weight from the current retained input closure, never persisted.
+    pub nar_size: u64,
 }
 
 pub fn record_attempt_producer_location(
@@ -48,20 +50,20 @@ pub fn record_attempt_producer_location(
 
 pub fn read_output_producers(
     database: &(impl DatabaseSource + ?Sized),
-    paths: &[Vec<u8>],
+    inputs: &[crate::store::closure::ClosurePath],
 ) -> std::io::Result<Vec<OutputProducer>> {
-    if paths.is_empty() {
+    if inputs.is_empty() {
         return Ok(Vec::new());
     }
-    let paths = paths
+    let sizes = inputs
         .iter()
-        .map(|path| std::str::from_utf8(path))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(std::io::Error::other)?;
+        .map(|path| (path.store_path.as_str(), path.nar_size))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let paths = sizes.keys().copied().collect::<Vec<_>>();
     let mut client = connect(database).map_err(std::io::Error::other)?;
     client
         .query(
-            "SELECT backend_name, backend_kind, location FROM output_producers
+            "SELECT backend_name, backend_kind, location, store_path FROM output_producers
          WHERE store_path = ANY($1) ORDER BY store_path",
             &[&paths],
         )
@@ -69,6 +71,7 @@ pub fn read_output_producers(
         .iter()
         .map(|row| {
             let kind: String = row.try_get(1).map_err(std::io::Error::other)?;
+            let store_path: &str = row.try_get(3).map_err(std::io::Error::other)?;
             Ok(OutputProducer {
                 backend_name: row.try_get(0).map_err(std::io::Error::other)?,
                 backend_kind: match kind.as_str() {
@@ -78,6 +81,7 @@ pub fn read_output_producers(
                     _ => return Err(std::io::Error::other("invalid producer backend kind")),
                 },
                 location: row.try_get(2).map_err(std::io::Error::other)?,
+                nar_size: sizes[store_path],
             })
         })
         .collect()

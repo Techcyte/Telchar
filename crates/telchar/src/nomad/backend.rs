@@ -1330,7 +1330,7 @@ pub fn render_job_for_execution(
         attempt_ordinal,
         execution.trace_context(),
     )?;
-    let mut locations = std::collections::BTreeMap::<&str, usize>::new();
+    let mut locations = std::collections::BTreeMap::<&str, u64>::new();
     for producer in execution.producers().iter().filter(|producer| {
         producer.backend_kind == crate::backend::BackendKind::Nomad
             && producer.backend_name == config.target().name()
@@ -1340,10 +1340,11 @@ pub fn render_job_for_execution(
             .as_deref()
             .filter(|value| valid_nomad_identity(value))
         {
-            *locations.entry(location).or_default() += 1;
+            let bytes = locations.entry(location).or_default();
+            *bytes = bytes.saturating_add(producer.nar_size);
         }
     }
-    if let Some((location, _)) = locations.into_iter().max_by_key(|(_, count)| *count) {
+    if let Some((location, _)) = locations.into_iter().max_by_key(|(_, bytes)| *bytes) {
         job["Job"]["Affinities"] = json!([{
             "LTarget": "${node.unique.id}", "Operand": "=", "RTarget": location, "Weight": 50,
         }]);

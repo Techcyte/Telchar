@@ -214,7 +214,13 @@ fn backend_locality_ranks_only_available_capacity_within_priority() {
             &["kvm"],
             Duration::from_millis(1),
             |target| ready != target.name(),
-            |target| if target.name() == "nomad" { 2 } else { 0 },
+            |target| {
+                if target.name() == "nomad" {
+                    u64::MAX
+                } else {
+                    0
+                }
+            },
         )
         .unwrap()
     };
@@ -234,7 +240,7 @@ fn backend_locality_ranks_only_available_capacity_within_priority() {
             &["kvm"],
             Duration::from_millis(1),
             |_| true,
-            |target| usize::from(target.name() == "removed-producer"),
+            |target| u64::from(target.name() == "removed-producer"),
         )
         .unwrap();
     assert_eq!(stale.target().name(), "ssh");

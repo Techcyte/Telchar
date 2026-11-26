@@ -305,13 +305,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 admitted.set_input_closure(closure.iter().map(|path| path.store_path.as_bytes().to_vec()).collect());
-                let input_leases = closure
-                    .into_iter()
+                let producer_input_closure: std::sync::Arc<[_]> = closure.into();
+                let input_leases = producer_input_closure
+                    .iter()
                     .enumerate()
                     .map(|(index, path)| {
                         (
                             format!("input-{request_id}-{index}"),
-                            path.store_path,
+                            path.store_path.clone(),
                             path.nar_size,
                         )
                     })
@@ -726,7 +727,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     // requests for the derivation would wait on it until they time out.
                                     (|| -> io::Result<_> {
                                     execution.set_producers(crate::persistence::read_output_producers(
-                                        database, admitted.input_sources(),
+                                        database, &producer_input_closure,
                                     )?);
                                     let permit = build_executor
                                         .reserve_build(&execution, &required_features)?

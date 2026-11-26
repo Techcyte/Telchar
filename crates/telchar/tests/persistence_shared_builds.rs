@@ -9,6 +9,20 @@ use std::time::Duration;
 use telchar::backend::{
     BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
 };
+fn producer_inputs(paths: &[Vec<u8>]) -> Vec<telchar::store::closure::ClosurePath> {
+    paths
+        .iter()
+        .map(|path| telchar::store::closure::ClosurePath {
+            store_path: String::from_utf8(path.clone()).unwrap(),
+            nar_hash: "sha256:fixture".into(),
+            nar_size: 1234,
+            references: Vec::new(),
+            deriver: None,
+            content_address: None,
+        })
+        .collect()
+}
+
 #[test]
 fn requester_reference_is_deterministic_and_component_separated() {
     let requester = telchar::service::ipc::RequesterMetadata {
@@ -829,7 +843,7 @@ fn predecessor_callback_cannot_complete_successor_attempt() {
     .expect("successor completes");
     let producers = telchar::persistence::read_output_producers(
         fixture.url(),
-        &[b"/nix/store/88888888888888888888888888888888-fenced".to_vec()],
+        &producer_inputs(&[b"/nix/store/88888888888888888888888888888888-fenced".to_vec()]),
     )
     .unwrap();
     assert_eq!(producers[0].location.as_deref(), Some("producer-node"));
@@ -837,7 +851,7 @@ fn predecessor_callback_cannot_complete_successor_attempt() {
     assert_eq!(
         telchar::persistence::read_output_producers(
             fixture.url(),
-            &[b"/nix/store/88888888888888888888888888888888-fenced".to_vec()],
+            &producer_inputs(&[b"/nix/store/88888888888888888888888888888888-fenced".to_vec()]),
         )
         .unwrap(),
         producers
@@ -974,12 +988,66 @@ fn shared_build_lifecycle_persists_immutable_terminal_success() {
 }
 
 #[test]
+fn output_producer_weights_join_each_distinct_retained_path() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let derivation = "/nix/store/77777777777777777777777777777777-weights.drv";
+    let outputs = [
+        "/nix/store/11111111111111111111111111111111-large",
+        "/nix/store/22222222222222222222222222222222-small",
+    ];
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[6; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("weights-job"),
+        &outputs,
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::collect_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        derivation,
+        &serde_json::json!({"status": "built"}),
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    // Reverse query order, include an unproduced path, and duplicate one path.
+    let mut inputs = producer_inputs(&[
+        outputs[1].as_bytes().to_vec(),
+        b"/nix/store/33333333333333333333333333333333-unknown".to_vec(),
+        outputs[0].as_bytes().to_vec(),
+    ]);
+    inputs[0].nar_size = 7;
+    inputs[2].nar_size = u64::MAX;
+    inputs.push(inputs[2].clone());
+    let producers = telchar::persistence::read_output_producers(fixture.url(), &inputs).unwrap();
+    assert_eq!(
+        producers
+            .iter()
+            .map(|producer| producer.nar_size)
+            .collect::<Vec<_>>(),
+        [u64::MAX, 7]
+    );
+    assert!(
+        producers
+            .iter()
+            .all(|producer| producer.backend_name == "nomad"
+                && producer.backend_kind == BackendKind::Nomad)
+    );
+}
+
+#[test]
 fn validated_producer_survives_restart_without_fabricating_cache_production() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).unwrap();
     let derivation = "/nix/store/77777777777777777777777777777777-producer.drv";
     let output = "/nix/store/33333333333333333333333333333333-input";
-    let paths = vec![output.as_bytes().to_vec()];
+    let paths = producer_inputs(&[output.as_bytes().to_vec()]);
     let claim = || {
         telchar::persistence::claim_shared_build(
             fixture.url(),
@@ -1039,12 +1107,28 @@ fn validated_producer_survives_restart_without_fabricating_cache_production() {
             backend_name: "pool.builder".into(),
             backend_kind: BackendKind::StaticSsh,
             location: None,
+            nar_size: 1234,
         }]
     );
     fixture.restart();
     assert_eq!(
         telchar::persistence::read_output_producers(fixture.url(), &paths).unwrap(),
         producers
+    );
+    let mut resized_inputs = paths.clone();
+    resized_inputs[0].nar_size = 9876;
+    resized_inputs.push(resized_inputs[0].clone());
+    let resized =
+        telchar::persistence::read_output_producers(fixture.url(), &resized_inputs).unwrap();
+    assert_eq!(resized.len(), 1, "one size per distinct producer path");
+    assert_eq!(
+        resized[0].nar_size, 9876,
+        "size comes from this retained closure, not persistence"
+    );
+    assert!(
+        telchar::persistence::read_output_producers(fixture.url(), &[])
+            .unwrap()
+            .is_empty()
     );
     let root = tempfile::tempdir().unwrap();
     let identity = root.path().join("identity");
@@ -1085,8 +1169,11 @@ fn validated_producer_survives_restart_without_fabricating_cache_production() {
         telchar::backend::BuildExecution::new("consumer", &request, Duration::from_secs(60))
             .unwrap();
     execution.set_producers(
-        telchar::persistence::read_output_producers(fixture.url(), request.input_sources())
-            .unwrap(),
+        telchar::persistence::read_output_producers(
+            fixture.url(),
+            &producer_inputs(request.input_sources()),
+        )
+        .unwrap(),
     );
     use telchar::backend::BuildBackend;
     let permit = executor.reserve_build(&execution, &[]).unwrap().unwrap();
@@ -1118,7 +1205,7 @@ fn validated_producer_survives_restart_without_fabricating_cache_production() {
     assert!(
         telchar::persistence::read_output_producers(
             fixture.url(),
-            &[cached_output.as_bytes().to_vec()],
+            &producer_inputs(&[cached_output.as_bytes().to_vec()]),
         )
         .unwrap()
         .is_empty()
