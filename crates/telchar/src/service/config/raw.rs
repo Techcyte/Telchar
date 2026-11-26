@@ -30,8 +30,18 @@ pub(super) struct HistoryRetentionSection {
     pub(super) retention_days: u64,
     pub(super) maximum_builds: Option<usize>,
     pub(super) destination: Option<PathBuf>,
+    pub(super) s3: Option<HistoryS3Section>,
     #[serde(default)]
     pub(super) discard: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HistoryS3Section {
+    pub(super) endpoint: String,
+    pub(super) region: String,
+    pub(super) credentials_file: PathBuf,
+    pub(super) timeout_seconds: Option<u64>,
 }
 
 #[derive(Deserialize)]
