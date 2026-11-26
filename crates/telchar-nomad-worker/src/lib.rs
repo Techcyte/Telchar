@@ -76,15 +76,22 @@ impl WorkerSession {
             event = "worker.store.connected",
             operation = "resolve-inputs"
         );
-        let mut valid = Vec::new();
-        for entry in &self.manifest.paths {
-            if store
-                .is_valid_path(entry.path.as_bytes())
-                .map_err(|_| io::Error::other("worker Nix store query failed"))?
-            {
-                valid.push(entry.path.clone());
-            }
-        }
+        // The validated manifest is bounded below the protocol's query path limit.
+        let paths = self
+            .manifest
+            .paths
+            .iter()
+            .map(|entry| entry.path.as_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let valid = store
+            .query_valid_paths(&paths, false)
+            .map_err(|_| io::Error::other("worker Nix store query failed"))?
+            .into_iter()
+            .map(|path| {
+                String::from_utf8(path)
+                    .map_err(|_| invalid("worker Nix store returned an invalid path"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         let valid = PathSet { paths: valid };
         self.inputs.record_valid_paths(valid.clone())?;
         self.send_metadata(FrameKind::ValidPaths, &valid)?;

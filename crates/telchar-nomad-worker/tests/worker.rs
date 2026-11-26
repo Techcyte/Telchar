@@ -9,8 +9,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use telchar::nomad::protocol::{
     Authentication, AuthenticationProof, BuildSpecification, Frame, FrameKind, InputManifest,
-    NamedOutput, PathManifestEntry, ProtocolLimits, decode_metadata, encode_metadata, read_frame,
-    write_frame,
+    NamedOutput, PathManifestEntry, PathSet, ProtocolLimits, decode_metadata, encode_metadata,
+    read_frame, write_frame,
 };
 use telchar_nomad_worker::{WorkerConfig, authenticate, receive_manifest};
 
@@ -810,4 +810,279 @@ fn sends_one_bounded_authentication_frame_over_websocket() {
         server.join().expect("server joins"),
         config.authentication().clone()
     );
+}
+
+// The fake daemon speaks the real worker wire protocol; it never touches a Nix store.
+fn resolve_inputs_with_daemon(
+    path_count: usize,
+    valid_indices: &[usize],
+    invalid_response: Option<Vec<Vec<u8>>>,
+) {
+    use nix_worker_protocol::{
+        CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
+    };
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
+
+    const QUERY_VALID_PATHS: u64 = 31;
+    const IS_VALID_PATH: u64 = 1;
+
+    fn integer(stream: &mut impl Read) -> u64 {
+        let mut bytes = [0; 8];
+        stream.read_exact(&mut bytes).unwrap();
+        u64::from_le_bytes(bytes)
+    }
+    fn string(stream: &mut impl Read) -> Vec<u8> {
+        let length = integer(stream) as usize;
+        assert!(length <= 4096);
+        let mut bytes = vec![0; length];
+        stream.read_exact(&mut bytes).unwrap();
+        let mut padding = [0; 7];
+        stream
+            .read_exact(&mut padding[..(8 - length % 8) % 8])
+            .unwrap();
+        bytes
+    }
+    fn write_integer(stream: &mut impl Write, value: u64) {
+        stream.write_all(&value.to_le_bytes()).unwrap();
+    }
+    fn write_string(stream: &mut impl Write, value: &[u8]) {
+        write_integer(stream, value.len() as u64);
+        stream.write_all(value).unwrap();
+        stream
+            .write_all(&[0; 7][..(8 - value.len() % 8) % 8])
+            .unwrap();
+    }
+
+    let mut manifest = manifest();
+    let template = manifest.paths[0].clone();
+    manifest.paths = (0..path_count)
+        .map(|index| PathManifestEntry {
+            path: format!("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input-{index}"),
+            ..template.clone()
+        })
+        .collect();
+    manifest.build.input_sources = manifest
+        .paths
+        .iter()
+        .map(|entry| entry.path.as_bytes().to_vec())
+        .collect();
+    let paths = manifest
+        .paths
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    // Reverse response order to exercise set semantics, not positional matching.
+    let valid = valid_indices
+        .iter()
+        .rev()
+        .map(|&index| paths[index].clone())
+        .collect::<Vec<_>>();
+    let mut requested = paths
+        .iter()
+        .filter(|path| !valid.contains(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    requested.sort();
+    let reject = invalid_response.is_some();
+    let response = invalid_response
+        .unwrap_or_else(|| valid.iter().map(|path| path.as_bytes().to_vec()).collect());
+    let directory = tempfile::tempdir().unwrap();
+    let socket_path = directory.path().join("daemon.sock");
+    let daemon = UnixListener::bind(&socket_path).unwrap();
+    let queried_paths = paths.clone();
+    let daemon_thread = thread::spawn(move || {
+        let (mut stream, _) = daemon.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(integer(&mut stream), CLIENT_WORKER_MAGIC);
+        assert_eq!(integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+        write_integer(&mut stream, SERVER_WORKER_MAGIC);
+        write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+        assert_eq!(integer(&mut stream), 0); // feature negotiation
+        write_integer(&mut stream, 0);
+        assert_eq!(integer(&mut stream), 0); // obsolete CPU affinity
+        assert_eq!(integer(&mut stream), 0); // obsolete reserve space
+        write_string(&mut stream, b"2.34.8");
+        write_integer(&mut stream, 1); // trusted
+        write_integer(&mut stream, STDERR_LAST);
+        let mut queries = 0;
+        let mut individual_queries = 0;
+        loop {
+            let mut operation = [0; 8];
+            match stream.read_exact(&mut operation) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(error) => panic!("daemon operation read failed: {error}"),
+            }
+            let operation = u64::from_le_bytes(operation);
+            if operation == QUERY_VALID_PATHS {
+                queries += 1;
+                let count = integer(&mut stream) as usize;
+                assert!(count <= nix_worker_protocol::MAXIMUM_QUERY_VALID_PATHS);
+                let actual = (0..count).map(|_| string(&mut stream)).collect::<Vec<_>>();
+                assert_eq!(
+                    actual,
+                    queried_paths
+                        .iter()
+                        .map(|path| path.as_bytes().to_vec())
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    integer(&mut stream),
+                    0,
+                    "validity query must not substitute"
+                );
+                write_integer(&mut stream, STDERR_LAST);
+                write_integer(&mut stream, response.len() as u64);
+                for path in &response {
+                    write_string(&mut stream, path);
+                }
+            } else if operation == IS_VALID_PATH {
+                // Support the old production path so red failures measure behavior.
+                individual_queries += 1;
+                let path = string(&mut stream);
+                write_integer(&mut stream, STDERR_LAST);
+                write_integer(&mut stream, u64::from(response.contains(&path)));
+            } else {
+                panic!("unexpected daemon operation {operation}");
+            }
+        }
+        (queries, individual_queries)
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}/fixture", listener.local_addr().unwrap());
+    let callback = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        let mut bytes = Vec::new();
+        write_frame(
+            &mut bytes,
+            &Frame::new(
+                FrameKind::InputManifest,
+                encode_metadata(&manifest, 8 * 1024 * 1024).unwrap(),
+                vec![],
+            ),
+            ProtocolLimits::new(8 * 1024 * 1024, 0),
+        )
+        .unwrap();
+        socket
+            .send(tungstenite::Message::Binary(bytes.into()))
+            .unwrap();
+        let mut frames = Vec::new();
+        loop {
+            match socket.read() {
+                Ok(message) => frames.push(
+                    read_frame(
+                        &mut message.into_data().as_ref(),
+                        ProtocolLimits::new(8 * 1024 * 1024, 0),
+                    )
+                    .unwrap(),
+                ),
+                Err(tungstenite::Error::Protocol(
+                    tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                )) => break,
+                Err(error) => panic!("callback read failed: {error}"),
+            }
+        }
+        frames
+    });
+    let (socket, _) = tungstenite::connect(endpoint).unwrap();
+    let mut session = telchar_nomad_worker::receive_authenticated_manifest(
+        socket,
+        8 * 1024 * 1024,
+        262144,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let result = session.resolve_inputs(&format!("unix://{}", socket_path.display()));
+    drop(session);
+    let (queries, individual_queries) = daemon_thread.join().unwrap();
+    let frames = callback.join().unwrap();
+    println!(
+        "resolve_inputs: paths={path_count} QueryValidPaths={queries} IsValidPath={individual_queries} rejected={reject}"
+    );
+    if reject {
+        assert!(
+            result.is_err(),
+            "invalid daemon response must fail closed, got {result:?}"
+        );
+        assert!(
+            frames.is_empty(),
+            "invalid results must not be sent to the gateway"
+        );
+    } else {
+        assert_eq!(result.unwrap().paths, requested);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].kind(), FrameKind::ValidPaths);
+        let actual: PathSet = decode_metadata(frames[0].metadata(), 8 * 1024 * 1024).unwrap();
+        assert_eq!(
+            actual
+                .paths
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            valid.into_iter().collect()
+        );
+        assert_eq!(frames[1].kind(), FrameKind::InputRequest);
+        let actual: PathSet = decode_metadata(frames[1].metadata(), 8 * 1024 * 1024).unwrap();
+        assert_eq!(actual.paths, requested);
+    }
+    assert_eq!(
+        queries, 1,
+        "resolve_inputs must issue one bounded QueryValidPaths"
+    );
+    assert_eq!(
+        individual_queries, 0,
+        "resolve_inputs must not issue per-path queries"
+    );
+}
+
+#[test]
+fn resolve_inputs_batches_all_warm_paths() {
+    resolve_inputs_with_daemon(3, &[0, 1, 2], None);
+}
+
+#[test]
+fn resolve_inputs_batches_mixed_paths() {
+    resolve_inputs_with_daemon(3, &[0, 2], None);
+}
+
+#[test]
+fn resolve_inputs_batches_no_warm_paths() {
+    resolve_inputs_with_daemon(3, &[], None);
+}
+
+#[test]
+fn resolve_inputs_batches_maximum_manifest() {
+    resolve_inputs_with_daemon(
+        nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES,
+        &[],
+        None,
+    );
+}
+
+#[test]
+fn resolve_inputs_rejects_foreign_valid_path() {
+    resolve_inputs_with_daemon(
+        3,
+        &[],
+        Some(vec![
+            b"/nix/store/cccccccccccccccccccccccccccccccc-foreign".to_vec(),
+        ]),
+    );
+}
+
+#[test]
+fn resolve_inputs_rejects_duplicate_valid_path() {
+    let path = b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input-0".to_vec();
+    resolve_inputs_with_daemon(3, &[], Some(vec![path.clone(), path]));
 }
