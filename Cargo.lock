@@ -2574,6 +2574,7 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-ec2",
+ "aws-sigv4",
  "base64 0.23.1",
  "dtoa",
  "hmac",

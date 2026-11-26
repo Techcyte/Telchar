@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use rustix::fs::{Mode, OFlags};
 use sha2::{Digest, Sha256};
 
+mod s3;
+pub use s3::S3Archive;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ArchiveReceipt {
     pub path: PathBuf,
@@ -27,6 +30,48 @@ pub fn maintain_history(
         .as_ref()
         .map(|path| FilesystemArchive::new(path.clone()))
         .transpose()?;
+    let s3 = policy
+        .s3
+        .as_ref()
+        .map(|config| {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Credentials {
+                access_key_id: String,
+                secret_access_key: String,
+                session_token: Option<String>,
+            }
+            use std::os::unix::fs::MetadataExt;
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(OFlags::NONBLOCK.bits() as i32)
+                .open(&config.credentials_file)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file()
+                || metadata.mode() & 0o077 != 0
+                || (metadata.uid() != 0 && metadata.uid() != rustix::process::geteuid().as_raw())
+                || metadata.len() > 16384
+            {
+                return Err(io::Error::other("invalid archive credentials file"));
+            }
+            let mut bytes = Vec::new();
+            (&mut file).take(16385).read_to_end(&mut bytes)?;
+            let credentials: Credentials = serde_json::from_slice(&bytes)
+                .map_err(|_| io::Error::other("invalid archive credentials file"))?;
+            S3Archive::new(
+                &config.endpoint,
+                &config.region,
+                aws_credential_types::Credentials::new(
+                    credentials.access_key_id,
+                    credentials.secret_access_key,
+                    credentials.session_token,
+                    None,
+                    "archive-file",
+                ),
+                config.timeout,
+            )
+        })
+        .transpose()?;
     crate::persistence::sweep_terminal_history(
         database,
         policy.retention,
@@ -34,7 +79,10 @@ pub fn maintain_history(
         cursor,
         |key, payload| match &destination {
             Some(archive) => archive.deliver(key, payload).map(|_| ()),
-            None => Ok(()),
+            None => match &s3 {
+                Some(archive) => archive.deliver(key, payload),
+                None => Ok(()),
+            },
         },
     )
 }

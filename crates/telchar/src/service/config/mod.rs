@@ -101,6 +101,15 @@ pub struct HistoryRetention {
     pub retention: Duration,
     pub maximum_builds: usize,
     pub destination: Option<PathBuf>,
+    pub s3: Option<HistoryS3>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryS3 {
+    pub endpoint: String,
+    pub region: String,
+    pub credentials_file: PathBuf,
+    pub timeout: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -402,7 +411,10 @@ impl ServiceConfig {
                 let maximum_builds = section.maximum_builds.unwrap_or(16);
                 if !(1..=3650).contains(&section.retention_days)
                     || !(1..=256).contains(&maximum_builds)
-                    || section.discard == section.destination.is_some()
+                    || usize::from(section.discard)
+                        + usize::from(section.destination.is_some())
+                        + usize::from(section.s3.is_some())
+                        != 1
                     || section
                         .destination
                         .as_ref()
@@ -410,7 +422,36 @@ impl ServiceConfig {
                 {
                     return Err(invalid("history retention policy is invalid"));
                 }
+                let s3 = section
+                    .s3
+                    .map(|s3| {
+                        let timeout = Duration::from_secs(s3.timeout_seconds.unwrap_or(30));
+                        validate_protected_file(
+                            s3.credentials_file.clone(),
+                            "archive credentials file is invalid",
+                        )?;
+                        crate::service::archive::S3Archive::new(
+                            &s3.endpoint,
+                            &s3.region,
+                            aws_credential_types::Credentials::new(
+                                "validation",
+                                "validation",
+                                None,
+                                None,
+                                "configuration",
+                            ),
+                            timeout,
+                        )?;
+                        Ok::<_, io::Error>(HistoryS3 {
+                            endpoint: s3.endpoint,
+                            region: s3.region,
+                            credentials_file: s3.credentials_file,
+                            timeout,
+                        })
+                    })
+                    .transpose()?;
                 Ok(HistoryRetention {
+                    s3,
                     retention: Duration::from_secs(section.retention_days * 86400),
                     maximum_builds,
                     destination: section.destination,
