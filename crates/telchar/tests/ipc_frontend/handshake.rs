@@ -88,7 +88,32 @@ fn frontend_delivers_response_after_request_half_close() {
     daemon.join().expect("fixture daemon completes");
     assert!(output.status.success(), "frontend failed: {output:?}");
     assert_eq!(output.stdout, b"response-marker");
-    assert!(output.stderr.is_empty(), "frontend diagnostics: {output:?}");
+    let diagnostics = String::from_utf8(output.stderr).expect("frontend diagnostics are UTF-8");
+    let lines = diagnostics.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "unexpected diagnostics: {diagnostics}");
+    for line in &lines {
+        assert!(line.contains(" INFO "), "unexpected severity: {line}");
+        assert!(
+            line.contains("event=\"ipc.relay.completed\""),
+            "unexpected event: {line}"
+        );
+        assert!(
+            line.contains("reason=\"source-eof\""),
+            "unexpected reason: {line}"
+        );
+        assert!(
+            !line.contains("request-marker") && !line.contains("response-marker"),
+            "payload leaked: {line}"
+        );
+    }
+    for bytes in [14, 15] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&format!("forwarded_bytes={bytes} "))),
+            "missing byte count: {diagnostics}"
+        );
+    }
 }
 
 #[test]
