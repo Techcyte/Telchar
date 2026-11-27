@@ -3,6 +3,36 @@
 use super::*;
 
 #[test]
+fn peer_eof_after_handshake_has_correlated_closure_reason() {
+    let mut fixture = FrontendFixture::spawn(None);
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    drop(input);
+    let mut remaining = Vec::new();
+    output.read_to_end(&mut remaining).unwrap();
+    assert!(
+        remaining.is_empty(),
+        "closure diagnostics contaminated protocol stdout"
+    );
+    assert!(fixture.frontend.wait().unwrap().success());
+    let diagnostics = fixture.finish();
+    assert!(
+        diagnostics.contains("event=\"worker.session.closed\""),
+        "{diagnostics}"
+    );
+    assert!(diagnostics.contains("reason=\"peer-eof\""), "{diagnostics}");
+    let closure = diagnostics
+        .lines()
+        .find(|line| line.contains("event=\"worker.session.closed\""))
+        .unwrap();
+    assert!(
+        !closure.contains("trace_id=none"),
+        "closure must retain trace correlation: {closure}"
+    );
+}
+
+#[test]
 fn live_set_options_request_returns_terminal_frame() {
     let collector = collector::start_collector();
     let mut fixture = FrontendFixture::spawn_configured(

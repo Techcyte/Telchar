@@ -391,7 +391,7 @@ fn run_frontend() -> io::Result<()> {
     let parent = tracing::Span::current();
     std::thread::spawn(move || {
         let _parent = parent.enter();
-        let _relay = tracing::trace_span!("ipc.frontend.relay", direction = "request").entered();
+        let _relay = tracing::info_span!("ipc.frontend.relay", direction = "request").entered();
         let result = telchar::service::ipc::copy_bounded(io::stdin().lock(), &mut request);
         let _ = request.shutdown(std::net::Shutdown::Write);
         if let Err(error) = result {
@@ -402,7 +402,7 @@ fn run_frontend() -> io::Result<()> {
             );
         }
     });
-    let _relay = tracing::trace_span!("ipc.frontend.relay", direction = "response").entered();
+    let _relay = tracing::info_span!("ipc.frontend.relay", direction = "response").entered();
     telchar::service::ipc::copy_bounded(daemon, io::stdout().lock())?;
     Ok(())
 }

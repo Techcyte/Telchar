@@ -1323,7 +1323,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         let _operation =
             tracing::info_span!("worker.operation", operation = ?operation.as_ref().ok()).entered();
         match operation {
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                tracing::info!(
+                    event = "worker.session.closed",
+                    reason = "peer-eof",
+                    phase = "read-operation",
+                    "worker protocol peer ended input"
+                );
+                return Ok(());
+            }
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
                 tracing::error!(
                     event = "worker.session.timed_out",
