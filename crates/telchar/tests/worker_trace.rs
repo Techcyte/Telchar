@@ -258,8 +258,11 @@ fn rejects_unknown_operation_without_relaying_its_body() {
     discard_string(&mut client);
     assert_eq!(read_word(&mut client), 0);
     assert_eq!(read_word(&mut client), STDERR_LAST);
-    write_word(&mut client, 999);
-    client.write_all(b"must-not-relay").expect("body writes");
+    let mut invalid_request = 999_u64.to_le_bytes().to_vec();
+    invalid_request.extend_from_slice(b"must-not-relay");
+    client
+        .write_all(&invalid_request)
+        .expect("invalid request writes");
     drop(client);
 
     let error = capture.finish().expect_err("unknown operation is rejected");
