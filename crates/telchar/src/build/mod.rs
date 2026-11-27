@@ -13,8 +13,48 @@ use crate::backend::BackendTarget;
 mod derivation;
 mod outputs;
 
-const MAXIMUM_STORED_BUILD_NODES: usize = 4096;
-const MAXIMUM_STORED_BUILD_DEPTH: usize = 128;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoredBuildLimits {
+    maximum_nodes: usize,
+    maximum_depth: usize,
+    maximum_bytes: u64,
+}
+
+impl StoredBuildLimits {
+    pub fn new(maximum_nodes: usize, maximum_depth: usize, maximum_bytes: u64) -> io::Result<Self> {
+        if maximum_nodes == 0 || maximum_depth == 0 || maximum_depth > 128 || maximum_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stored build limits require positive nodes and bytes and depth between 1 and 128",
+            ));
+        }
+        Ok(Self {
+            maximum_nodes,
+            maximum_depth,
+            maximum_bytes,
+        })
+    }
+
+    pub fn maximum_nodes(self) -> usize {
+        self.maximum_nodes
+    }
+    pub fn maximum_depth(self) -> usize {
+        self.maximum_depth
+    }
+    pub fn maximum_bytes(self) -> u64 {
+        self.maximum_bytes
+    }
+}
+
+impl Default for StoredBuildLimits {
+    fn default() -> Self {
+        Self {
+            maximum_nodes: 4096,
+            maximum_depth: 128,
+            maximum_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
 
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
@@ -31,6 +71,7 @@ pub enum StoredLoadFailurePhase {
     DependencyNodeLimit,
     DependencyDepthLimit,
     DependencyCycle,
+    DerivationByteLimit,
     SelectedOutput,
     FinalValidation,
 }
@@ -48,6 +89,7 @@ impl StoredLoadFailurePhase {
             Self::DependencyNodeLimit => "dependency-node-limit",
             Self::DependencyDepthLimit => "dependency-depth-limit",
             Self::DependencyCycle => "dependency-cycle",
+            Self::DerivationByteLimit => "derivation-byte-limit",
             Self::SelectedOutput => "selected-output",
             Self::FinalValidation => "final-validation",
         }
@@ -129,14 +171,11 @@ fn load_derivation(
     backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
     remaining_bytes: &mut u64,
 ) -> io::Result<Vec<u8>> {
-    let contents = crate::store::export::load_stored_derivation(
-        path,
-        (*remaining_bytes).min(16 * 1024 * 1024),
-        backend,
-    )?;
-    *remaining_bytes = remaining_bytes
-        .checked_sub(contents.len() as u64)
-        .ok_or_else(|| stored_load_error(StoredLoadFailurePhase::RootExport))?;
+    let contents = crate::store::export::load_stored_derivation(path, 16 * 1024 * 1024, backend)?;
+    *remaining_bytes = remaining_bytes.checked_sub(contents.len() as u64).ok_or_else(|| {
+        tracing::warn!(event = "gateway.stored_graph.rejected", phase = "derivation-byte-limit", derivation_path = %path.display(), remaining_bytes = *remaining_bytes, derivation_bytes = contents.len(), "stored derivation byte budget exceeded");
+        stored_load_error(StoredLoadFailurePhase::DerivationByteLimit)
+    })?;
     Ok(contents)
 }
 
@@ -159,6 +198,8 @@ struct StoredBuilds<'a, B: ?Sized> {
     roots: &'a mut dyn crate::store::export::TemporaryRoots,
     backends: &'a [BackendTarget],
     remaining_bytes: u64,
+    limits: StoredBuildLimits,
+    peak_depth: usize,
     derivations: std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
     visiting: BTreeSet<Vec<u8>>,
     completed: BTreeSet<Vec<u8>>,
@@ -167,7 +208,10 @@ struct StoredBuilds<'a, B: ?Sized> {
 
 impl<B: crate::store::export::StoreExportBackend + ?Sized> StoredBuilds<'_, B> {
     fn load(mut self, path: &std::path::Path) -> io::Result<Vec<BuildRequest>> {
-        self.visit(path)?;
+        self.visit(path).inspect_err(|error| {
+            tracing::warn!(event = "gateway.stored_graph.failed", phase = stored_load_failure_phase(error).map(StoredLoadFailurePhase::as_str).unwrap_or("unknown"), derivation_path = %path.display(), nodes = self.completed.len() + self.visiting.len(), depth = self.peak_depth, derivation_bytes = self.limits.maximum_bytes - self.remaining_bytes, node_limit = self.limits.maximum_nodes, depth_limit = self.limits.maximum_depth, byte_limit = self.limits.maximum_bytes, "stored dependency graph admission failed");
+        })?;
+        tracing::info!(event = "gateway.stored_graph.admitted", derivation_path = %path.display(), nodes = self.completed.len(), depth = self.peak_depth, derivation_bytes = self.limits.maximum_bytes - self.remaining_bytes, node_limit = self.limits.maximum_nodes, depth_limit = self.limits.maximum_depth, byte_limit = self.limits.maximum_bytes, "stored dependency graph admitted");
         Ok(self.builds)
     }
 
@@ -180,18 +224,19 @@ impl<B: crate::store::export::StoreExportBackend + ?Sized> StoredBuilds<'_, B> {
         let depth = self.visiting.len();
         let failure = if self.visiting.contains(&key) {
             Some(StoredLoadFailurePhase::DependencyCycle)
-        } else if depth >= MAXIMUM_STORED_BUILD_DEPTH {
+        } else if depth >= self.limits.maximum_depth {
             Some(StoredLoadFailurePhase::DependencyDepthLimit)
-        } else if nodes >= MAXIMUM_STORED_BUILD_NODES {
+        } else if nodes >= self.limits.maximum_nodes {
             Some(StoredLoadFailurePhase::DependencyNodeLimit)
         } else {
             None
         };
         if let Some(phase) = failure {
-            tracing::warn!(event = "gateway.stored_graph.rejected", phase = phase.as_str(), derivation_path = %path.display(), nodes, depth, node_limit = MAXIMUM_STORED_BUILD_NODES, depth_limit = MAXIMUM_STORED_BUILD_DEPTH, "stored dependency graph rejected");
+            tracing::warn!(event = "gateway.stored_graph.rejected", phase = phase.as_str(), derivation_path = %path.display(), nodes, depth, node_limit = self.limits.maximum_nodes, depth_limit = self.limits.maximum_depth, byte_limit = self.limits.maximum_bytes, "stored dependency graph rejected");
             return Err(stored_load_error(phase));
         }
         self.visiting.insert(key.clone());
+        self.peak_depth = self.peak_depth.max(self.visiting.len());
         self.roots.retain(&key)?;
         let (request, inputs) = BuildRequest::load_stored_with_inputs(
             path,
@@ -325,12 +370,15 @@ impl BuildRequest {
         backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
         roots: &mut dyn crate::store::export::TemporaryRoots,
         backends: &[BackendTarget],
+        limits: StoredBuildLimits,
     ) -> io::Result<Vec<Self>> {
         StoredBuilds {
             backend,
             roots,
             backends,
-            remaining_bytes: 64 * 1024 * 1024,
+            remaining_bytes: limits.maximum_bytes,
+            limits,
+            peak_depth: 0,
             derivations: Default::default(),
             visiting: BTreeSet::new(),
             completed: BTreeSet::new(),
@@ -348,7 +396,10 @@ impl BuildRequest {
     ) -> io::Result<(Self, StoredInputs)> {
         let contents =
             load_cached_derivation(derivation_path, backend, remaining_bytes, derivations)
-                .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootExport))?;
+                .map_err(|error| match stored_load_failure_phase(&error) {
+                    Some(_) => error,
+                    None => stored_load_error(StoredLoadFailurePhase::RootExport),
+                })?;
         let mut request = Self::from_stored_derivation(
             derivation_path.as_os_str().as_encoded_bytes(),
             &contents,
@@ -372,8 +423,12 @@ impl BuildRequest {
                     .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyPath))?,
             );
             let input_contents =
-                load_cached_derivation(input_path, backend, remaining_bytes, derivations)
-                    .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
+                load_cached_derivation(input_path, backend, remaining_bytes, derivations).map_err(
+                    |error| match stored_load_failure_phase(&error) {
+                        Some(_) => error,
+                        None => stored_load_error(StoredLoadFailurePhase::DependencyExport),
+                    },
+                )?;
             let input = derivation::parse(&input_contents).map_err(|error| {
                 tracing::warn!(event = "gateway.stored_dependency.rejected", derivation_path = %input_path.display(), diagnostic = %error, "stored dependency parsing failed");
                 stored_load_error(StoredLoadFailurePhase::DependencyParse)

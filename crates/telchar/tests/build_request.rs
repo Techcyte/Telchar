@@ -387,6 +387,7 @@ fn loads_selected_input_derivation_outputs() {
         &mut backend,
         &mut roots,
         &backends("x86_64-linux", &[]),
+        Default::default(),
     )
     .expect("cold graph loads");
     assert_eq!(
@@ -416,6 +417,7 @@ fn loads_selected_input_derivation_outputs() {
         &mut backend,
         &mut roots,
         &backends("x86_64-linux", &[]),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -442,6 +444,7 @@ fn loads_selected_input_derivation_outputs() {
         &mut backend,
         &mut roots,
         &backends("x86_64-linux", &[]),
+        Default::default(),
     )
     .unwrap_err();
     assert_eq!(

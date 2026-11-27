@@ -8,6 +8,7 @@ pub struct SessionBuilder<'a> {
     running_disconnect_policy: Option<crate::service::deployment::RunningDisconnectPolicy>,
     output_retention: Option<crate::service::deployment::OutputRetention>,
     maximum_retained_input_bytes: Option<u64>,
+    stored_build_limits: Option<crate::build::StoredBuildLimits>,
     store_query: Option<&'a mut dyn QueryValidPathsStore>,
     build_executor: Option<&'a mut dyn BuildBackend>,
     store_export: Option<&'a mut dyn crate::store::export::StoreExportBackend>,
@@ -38,6 +39,7 @@ pub(super) struct SessionContext<'a> {
     pub running_disconnect_policy: crate::service::deployment::RunningDisconnectPolicy,
     pub output_retention: crate::service::deployment::OutputRetention,
     pub maximum_retained_input_bytes: u64,
+    pub stored_build_limits: crate::build::StoredBuildLimits,
     pub store_query: &'a mut dyn QueryValidPathsStore,
     pub build_executor: &'a mut dyn BuildBackend,
     pub store_export: &'a mut dyn crate::store::export::StoreExportBackend,
@@ -74,6 +76,7 @@ impl<'a> SessionBuilder<'a> {
             running_disconnect_policy: None,
             output_retention: None,
             maximum_retained_input_bytes: None,
+            stored_build_limits: None,
             store_query: None,
             build_executor: None,
             store_export: None,
@@ -95,6 +98,11 @@ impl<'a> SessionBuilder<'a> {
             shared_build_scheduler: None,
             scheduling_limits: None,
         }
+    }
+
+    pub fn stored_build_limits(mut self, value: crate::build::StoredBuildLimits) -> Self {
+        self.stored_build_limits = Some(value);
+        self
     }
 
     pub fn backend_targets(mut self, value: &'a [crate::backend::BackendTarget]) -> Self {
@@ -207,6 +215,7 @@ impl<'a> SessionBuilder<'a> {
             running_disconnect_policy: self.running_disconnect_policy.ok_or_else(missing)?,
             output_retention: self.output_retention.ok_or_else(missing)?,
             maximum_retained_input_bytes: self.maximum_retained_input_bytes.ok_or_else(missing)?,
+            stored_build_limits: self.stored_build_limits.ok_or_else(missing)?,
             store_query: self.store_query.ok_or_else(missing)?,
             build_executor: self.build_executor.ok_or_else(missing)?,
             store_export: self.store_export.ok_or_else(missing)?,

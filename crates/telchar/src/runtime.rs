@@ -437,6 +437,14 @@ fn run_daemon() -> io::Result<()> {
     let running_disconnect_policy = config.running_disconnect_policy();
     let output_retention = config.output_retention();
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
+    let graph_limits = config.stored_build_limits();
+    tracing::info!(
+        event = "gateway.stored_graph.configured",
+        node_limit = graph_limits.maximum_nodes(),
+        depth_limit = graph_limits.maximum_depth(),
+        byte_limit = graph_limits.maximum_bytes(),
+        "stored dependency graph limits configured"
+    );
     let transfer_limits = telchar::service::transfer_limits::TransferLimits::from_environment()?;
     let object_admission =
         telchar::service::transfer_limits::ObjectAdmissionState::new(&transfer_limits);

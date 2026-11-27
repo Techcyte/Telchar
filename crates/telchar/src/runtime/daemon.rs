@@ -155,6 +155,7 @@ pub(super) fn serve_accepted_connection(
         .backend_targets(&backend_targets)
         .disconnect_policy(running_disconnect_policy)
         .retention(output_retention, maximum_retained_input_bytes)
+        .stored_build_limits(service_config.stored_build_limits())
         .stores(
             &mut store_query,
             store_export.as_mut(),

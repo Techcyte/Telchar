@@ -35,6 +35,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         running_disconnect_policy,
         output_retention,
         maximum_retained_input_bytes,
+        stored_build_limits,
         store_query,
         build_executor,
         store_export,
@@ -1596,6 +1597,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         store_export,
                         graph_roots.as_mut(),
                         backend_targets,
+                        stored_build_limits,
                     )
                 }) {
                     Ok(admitted) => admitted,
