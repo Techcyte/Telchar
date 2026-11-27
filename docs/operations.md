@@ -170,7 +170,7 @@ address = "builder-1.example"
 selection_priority = 10
 ```
 
-`selection_priority` is optional and defaults to `1`. Higher values receive compatible builds first. When every compatible backend at a higher priority is at capacity, selection falls through to available lower-priority local, SSH, or Nomad capacity. Equal priorities preserve configuration order. This setting is distinct from Nomad's allocation `priority` range. Consul-discovered SSH services may override their pool default with scalar service metadata `telchar_priority`.
+`selection_priority` is optional and defaults to `1`. Higher values receive compatible builds first. When every compatible backend at a higher priority is at capacity, selection falls through to available lower-priority local, SSH, or Nomad capacity. Within equal priorities, successful producers of dependency input paths receive preference; ties preserve configuration order. Locality never overrides system/features, SSH readiness, or available capacity. Missing, stale, or busy producers fall back to ordinary selection without waiting for their location. Cached or already-valid outputs do not create a producer record. This setting is distinct from Nomad's allocation `priority` range. Consul-discovered SSH services may override their pool default with scalar service metadata `telchar_priority`.
 
 All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged after capacity assignment.
 
@@ -202,6 +202,18 @@ The gateway Nix daemon is trusted authority. The Telchar account needs the opera
 Keep the GC-root directory on persistent storage. Monitor it together with the gateway store, import spool, and disk reserve. Fresh disk-consuming transfers fail closed when store or staging capacity cannot be measured. Client imports, static SSH staging, and Nomad output spooling hold shared per-filesystem reservations until their staging/import lifetime ends. Reservations account for concurrent transfers within one gateway process; they do not coordinate unrelated processes or guarantee free space against external writers. Observed free space and outstanding reservations are combined conservatively, so partially written transfers can temporarily reduce available admission twice. Status, cancellation, and cleanup do not require a fresh transfer reservation. Output retention defaults to a bounded period so a disconnected client can still retrieve a completed result.
 
 `lifecycle_detail_retention_days` controls disposable lifecycle detail retention in service TOML: default `30`, range `1` through `3650`, with daemon restart required for changes. Every sixty seconds, maintenance prunes bounded pages of eligible reconciled leases, detached or delivered attachments, and unreferenced closed sessions after root reconciliation. Age starts at final closure or reconciliation, including execution cleanup and hook-root release; unresolved consumers prevent pruning. Request, attempt, result and ownership audit records remain intact.
+
+Stored dependency graph admission uses these top-level service TOML settings (daemon restart required):
+
+```toml
+maximum_stored_build_nodes = 4096
+maximum_stored_build_depth = 128
+maximum_stored_build_bytes = 67108864
+```
+
+Nodes count distinct derivations visited, including the requested target; already-valid selected outputs prune traversal. Depth counts the active dependency chain. Bytes count aggregate unique exported derivation contents, not build inputs or outputs. Nodes and bytes must be positive; depth must be between 1 and 128 to bound recursive stack use. Each individual derivation remains limited to 16 MiB. Node, depth, cycle, and aggregate byte rejections have distinct failure phases; graph diagnostics record the rejected derivation and applicable bounds. NixOS operators can set these through `services.telchar.settings`. SIGHUP does not reload these limits.
+
+At startup, `gateway.stored_graph.configured` records `node_limit`, `depth_limit`, and `byte_limit`. Every successful admission emits INFO `gateway.stored_graph.admitted`; failed admission emits WARN `gateway.stored_graph.failed` with a `phase`. Both summaries include `derivation_path`, `nodes` (distinct visited derivations), `depth` (peak active traversal depth), `derivation_bytes` (unique successfully loaded contents), and all three configured limits. Exported dependencies whose outputs are already valid contribute bytes but may not be visited nodes. Failed summaries count accepted traversal work before rejection; the detailed rejection event identifies the offending dependency. In Loki, filter structured event metadata and unwrap numeric fields to compare consumption against limits; avoid indexing derivation paths as stream labels.
 
 A sweep uses a fixed database-time cutoff and process-local keyset cursors. Restart safely rescans eligibility. Cleanup faults can delay pruning; this policy is not a database-size ceiling or an archive. Back up immutable audit history and monitor its growth separately.
 

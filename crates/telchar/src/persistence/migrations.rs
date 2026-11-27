@@ -200,6 +200,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "log_archive_expiry",
         sql: include_str!("../../migrations/0037_log_archive_expiry.sql"),
     },
+    Migration {
+        version: 38,
+        name: "output_producers",
+        sql: include_str!("../../migrations/0038_output_producers.sql"),
+    },
+    Migration {
+        version: 39,
+        name: "ownership_renewal_lock",
+        sql: include_str!("../../migrations/0039_ownership_renewal_lock.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

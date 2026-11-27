@@ -9,6 +9,20 @@ use std::time::Duration;
 use telchar::backend::{
     BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
 };
+fn producer_inputs(paths: &[Vec<u8>]) -> Vec<telchar::store::closure::ClosurePath> {
+    paths
+        .iter()
+        .map(|path| telchar::store::closure::ClosurePath {
+            store_path: String::from_utf8(path.clone()).unwrap(),
+            nar_hash: "sha256:fixture".into(),
+            nar_size: 1234,
+            references: Vec::new(),
+            deriver: None,
+            content_address: None,
+        })
+        .collect()
+}
+
 #[test]
 fn requester_reference_is_deterministic_and_component_separated() {
     let requester = telchar::service::ipc::RequesterMetadata {
@@ -692,7 +706,7 @@ fn unresolved_nomad_obligation_prevents_fresh_claim_after_failure() {
 
 #[test]
 fn predecessor_callback_cannot_complete_successor_attempt() {
-    let fixture = PostgresFixture::start();
+    let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let derivation = "/nix/store/77777777777777777777777777777777-fenced.drv";
     telchar::persistence::claim_shared_build(
@@ -719,6 +733,22 @@ fn predecessor_callback_cannot_complete_successor_attempt() {
         &serde_json::json!({"reason": "predecessor terminated"}),
     )
     .expect("successor starts");
+    assert!(
+        telchar::persistence::record_attempt_producer_location(
+            fixture.url(),
+            derivation,
+            predecessor.attempt_id,
+            "stale-node",
+        )
+        .is_err()
+    );
+    telchar::persistence::record_attempt_producer_location(
+        fixture.url(),
+        derivation,
+        successor_attempt.attempt_id,
+        "producer-node",
+    )
+    .unwrap();
     let successor = telchar::persistence::read_shared_build(fixture.url(), derivation)
         .expect("build reads")
         .expect("build exists");
@@ -811,6 +841,30 @@ fn predecessor_callback_cannot_complete_successor_attempt() {
         Duration::from_secs(3_600),
     )
     .expect("successor completes");
+    let producers = telchar::persistence::read_output_producers(
+        fixture.url(),
+        &producer_inputs(&[b"/nix/store/88888888888888888888888888888888-fenced".to_vec()]),
+    )
+    .unwrap();
+    assert_eq!(producers[0].location.as_deref(), Some("producer-node"));
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_output_producers(
+            fixture.url(),
+            &producer_inputs(&[b"/nix/store/88888888888888888888888888888888-fenced".to_vec()]),
+        )
+        .unwrap(),
+        producers
+    );
+    assert!(
+        telchar::persistence::record_attempt_producer_location(
+            fixture.url(),
+            derivation,
+            successor_attempt.attempt_id,
+            "terminal-overwrite",
+        )
+        .is_err()
+    );
     let terminal = telchar::persistence::read_shared_build(fixture.url(), derivation).unwrap();
     for attempt in [predecessor.attempt_id, successor_attempt.attempt_id] {
         assert!(
@@ -930,6 +984,231 @@ fn shared_build_lifecycle_persists_immutable_terminal_success() {
         .expect_err("terminal shared build is immutable")
         .failure(),
         telchar::persistence::SharedBuildFailure::InvalidState
+    );
+}
+
+#[test]
+fn output_producer_weights_join_each_distinct_retained_path() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let derivation = "/nix/store/77777777777777777777777777777777-weights.drv";
+    let outputs = [
+        "/nix/store/11111111111111111111111111111111-large",
+        "/nix/store/22222222222222222222222222222222-small",
+    ];
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[6; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("weights-job"),
+        &outputs,
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::collect_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        derivation,
+        &serde_json::json!({"status": "built"}),
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    // Reverse query order, include an unproduced path, and duplicate one path.
+    let mut inputs = producer_inputs(&[
+        outputs[1].as_bytes().to_vec(),
+        b"/nix/store/33333333333333333333333333333333-unknown".to_vec(),
+        outputs[0].as_bytes().to_vec(),
+    ]);
+    inputs[0].nar_size = 7;
+    inputs[2].nar_size = u64::MAX;
+    inputs.push(inputs[2].clone());
+    let producers = telchar::persistence::read_output_producers(fixture.url(), &inputs).unwrap();
+    assert_eq!(
+        producers
+            .iter()
+            .map(|producer| producer.nar_size)
+            .collect::<Vec<_>>(),
+        [u64::MAX, 7]
+    );
+    assert!(
+        producers
+            .iter()
+            .all(|producer| producer.backend_name == "nomad"
+                && producer.backend_kind == BackendKind::Nomad)
+    );
+}
+
+#[test]
+fn validated_producer_survives_restart_without_fabricating_cache_production() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let derivation = "/nix/store/77777777777777777777777777777777-producer.drv";
+    let output = "/nix/store/33333333333333333333333333333333-input";
+    let paths = producer_inputs(&[output.as_bytes().to_vec()]);
+    let claim = || {
+        telchar::persistence::claim_shared_build(
+            fixture.url(),
+            derivation,
+            &[4; 32],
+            "pool.builder",
+            BackendKind::StaticSsh,
+            BackendKind::StaticSsh.capabilities(),
+            Some("ssh-execution"),
+            &[output],
+        )
+        .unwrap()
+    };
+    claim();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    let predecessor = owner.database().clone();
+    drop(owner);
+    let replacement = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    assert!(
+        predecessor
+            .connection()
+            .unwrap()
+            .execute(
+                "DELETE FROM output_producers WHERE store_path = $1",
+                &[&output]
+            )
+            .is_err()
+    );
+    replacement.verify().unwrap();
+    drop(replacement);
+    assert!(
+        telchar::persistence::read_output_producers(fixture.url(), &paths)
+            .unwrap()
+            .is_empty()
+    );
+    telchar::persistence::start_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::collect_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        derivation,
+        &serde_json::json!({"status": "built"}),
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let producers = telchar::persistence::read_output_producers(fixture.url(), &paths).unwrap();
+    assert_eq!(
+        producers,
+        vec![telchar::persistence::OutputProducer {
+            backend_name: "pool.builder".into(),
+            backend_kind: BackendKind::StaticSsh,
+            location: None,
+            nar_size: 1234,
+        }]
+    );
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_output_producers(fixture.url(), &paths).unwrap(),
+        producers
+    );
+    let mut resized_inputs = paths.clone();
+    resized_inputs[0].nar_size = 9876;
+    resized_inputs.push(resized_inputs[0].clone());
+    let resized =
+        telchar::persistence::read_output_producers(fixture.url(), &resized_inputs).unwrap();
+    assert_eq!(resized.len(), 1, "one size per distinct producer path");
+    assert_eq!(
+        resized[0].nar_size, 9876,
+        "size comes from this retained closure, not persistence"
+    );
+    assert!(
+        telchar::persistence::read_output_producers(fixture.url(), &[])
+            .unwrap()
+            .is_empty()
+    );
+    let root = tempfile::tempdir().unwrap();
+    let identity = root.path().join("identity");
+    let known_hosts = root.path().join("known-hosts");
+    std::fs::write(&identity, "fixture-key").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&known_hosts, "builder ssh-ed25519 AAAA\n").unwrap();
+    let ssh = root.path().join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config_path = root.path().join("service.toml");
+    std::fs::write(&config_path, format!(
+        "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n[[backends.ssh]]\nidentity_file = {:?}\nknown_hosts_file = {:?}\nssh_program = {:?}\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n", identity, known_hosts, ssh,
+    )).unwrap();
+    let config =
+        telchar::service::config::ServiceConfig::load_with_environment(&config_path, |_| None)
+            .unwrap();
+    let inventory = config.static_ssh_backends().to_vec();
+    let health = telchar::backend::static_ssh::StaticSshHealth::from_states(
+        &inventory,
+        [(
+            "pool.builder",
+            telchar::backend::static_ssh::StaticSshHealthState::Ready,
+        )],
+    );
+    let backends =
+        telchar::backend::routing::ConfiguredBackends::with_health(&config, None, None, health)
+            .unwrap();
+    let executor = backends
+        .executor(
+            telchar::persistence::Database::connect(fixture.url()).unwrap(),
+            Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+        )
+        .unwrap();
+    let request = durable_build_request();
+    let mut execution =
+        telchar::backend::BuildExecution::new("consumer", &request, Duration::from_secs(60))
+            .unwrap();
+    execution.set_producers(
+        telchar::persistence::read_output_producers(
+            fixture.url(),
+            &producer_inputs(request.input_sources()),
+        )
+        .unwrap(),
+    );
+    use telchar::backend::BuildBackend;
+    let permit = executor.reserve_build(&execution, &[]).unwrap().unwrap();
+    assert_eq!(permit.target().name(), "pool.builder");
+    let fallback = executor.reserve_build(&execution, &[]).unwrap().unwrap();
+    assert_eq!(fallback.target().name(), "local");
+    let cached = "/nix/store/99999999999999999999999999999999-cached.drv";
+    let cached_output = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cached";
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        cached,
+        &[5; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("unused-job"),
+        &[cached_output],
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(fixture.url(), cached).unwrap();
+    telchar::persistence::collect_shared_build(fixture.url(), cached).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        cached,
+        &serde_json::json!({"status": "already-valid"}),
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    assert!(
+        telchar::persistence::read_output_producers(
+            fixture.url(),
+            &producer_inputs(&[cached_output.as_bytes().to_vec()]),
+        )
+        .unwrap()
+        .is_empty()
     );
 }
 

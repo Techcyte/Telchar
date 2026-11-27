@@ -204,6 +204,15 @@ fn worker_build(build: BuildSpecification, uri: &str) {
 }
 
 fn worker_build_result(build: BuildSpecification, uri: &str, failure: Option<&str>) {
+    worker_build_outcome(build, uri, failure, BuildOutcome::Built);
+}
+
+fn worker_build_outcome(
+    build: BuildSpecification,
+    uri: &str,
+    failure: Option<&str>,
+    expected: BuildOutcome,
+) {
     let endpoint = GatewayStoreEndpoint::parse(uri).unwrap();
     let info = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint)
         .unwrap()
@@ -358,7 +367,7 @@ fn worker_build_result(build: BuildSpecification, uri: &str, failure: Option<&st
             "logs={logs}; diagnostic={diagnostic_text}"
         );
     } else {
-        assert_eq!(result.outcome, BuildOutcome::Built);
+        assert_eq!(result.outcome, expected);
         let metadata = metadata.unwrap();
         assert_eq!(metadata.nar_size, nar.len() as u64);
         use sha2::Digest;
@@ -503,7 +512,10 @@ fn builtin_fetch_executes_on_worker_daemon_and_returns_only_verified_outputs() {
         );
         assert_eq!(BuildSpecification::from(&request), build);
         let output = PathBuf::from(String::from_utf8(build.outputs[0].path.clone()).unwrap());
-        worker_build_result(build, &uri, failure);
+        worker_build_result(build.clone(), &uri, failure);
+        if failure.is_none() {
+            worker_build_outcome(build, &uri, None, BuildOutcome::AlreadyValid);
+        }
         let mut store = telchar::store::daemon::GatewayStoreConnection::connect(
             &GatewayStoreEndpoint::parse(&uri).unwrap(),
         )

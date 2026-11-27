@@ -18,6 +18,19 @@ pub enum DatabaseError {
 }
 
 impl DatabaseError {
+    /// Bounded diagnostic class; never includes SQL, parameters or server messages.
+    pub fn cause(&self) -> &'static str {
+        match self {
+            Self::Deadline => "deadline",
+            Self::Cancelled => "cancelled",
+            Self::Closed => "closed",
+            Self::Runtime(_) => "runtime",
+            Self::Query(error) if error.is_closed() => "closed",
+            Self::Query(error) if error.as_db_error().is_some() => "server",
+            Self::Query(_) => "transport-or-protocol",
+        }
+    }
+
     pub fn as_db_error(&self) -> Option<&tokio_postgres::error::DbError> {
         match self {
             Self::Query(error) => error.as_db_error(),
@@ -124,8 +137,10 @@ struct Driver {
 impl Driver {
     fn run<T>(
         &mut self,
+        operation_name: &'static str,
         operation: impl Future<Output = Result<T, tokio_postgres::Error>>,
     ) -> Result<T, DatabaseError> {
+        let started = Instant::now();
         let connection = self.connection.as_mut().ok_or(DatabaseError::Closed)?;
         let mut disconnected = false;
         let request = self.request.clone();
@@ -169,10 +184,19 @@ impl Driver {
                 let _ = tokio::time::timeout(Duration::from_millis(250), cancel).await;
             });
         }
-        if let Err(error) = &result
-            && let Some(owner) = &self.ownership
-        {
-            owner.observe_database_error(error);
+        if let Err(error) = &result {
+            tracing::warn!(
+                event = "database.connection.operation_failed",
+                operation = operation_name,
+                cause = error.cause(),
+                sqlstate = error.code().map(|code| code.code()).unwrap_or("none"),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                ownership_observed = self.ownership.is_some(),
+                "database operation failed"
+            );
+            if let Some(owner) = &self.ownership {
+                owner.observe_database_error(error);
+            }
         }
         if disconnected
             || matches!(
@@ -227,7 +251,8 @@ impl DatabaseClient {
         T: ?Sized + ToStatement,
     {
         super::super::telemetry::run("query", || {
-            self.driver.run(self.client.query(statement, parameters))
+            self.driver
+                .run("query", self.client.query(statement, parameters))
         })
     }
 
@@ -241,7 +266,7 @@ impl DatabaseClient {
     {
         super::super::telemetry::run("query_one", || {
             self.driver
-                .run(self.client.query_one(statement, parameters))
+                .run("query_one", self.client.query_one(statement, parameters))
         })
     }
 
@@ -255,7 +280,7 @@ impl DatabaseClient {
     {
         super::super::telemetry::run("query_opt", || {
             self.driver
-                .run(self.client.query_opt(statement, parameters))
+                .run("query_opt", self.client.query_opt(statement, parameters))
         })
     }
 
@@ -268,19 +293,22 @@ impl DatabaseClient {
         T: ?Sized + ToStatement,
     {
         super::super::telemetry::run("execute", || {
-            self.driver.run(self.client.execute(statement, parameters))
+            self.driver
+                .run("execute", self.client.execute(statement, parameters))
         })
     }
 
     pub fn batch_execute(&mut self, query: &str) -> Result<(), DatabaseError> {
         super::super::telemetry::run("batch_execute", || {
-            self.driver.run(self.client.batch_execute(query))
+            self.driver
+                .run("batch_execute", self.client.batch_execute(query))
         })
     }
 
     pub fn simple_query(&mut self, query: &str) -> Result<Vec<SimpleQueryMessage>, DatabaseError> {
         super::super::telemetry::run("simple_query", || {
-            self.driver.run(self.client.simple_query(query))
+            self.driver
+                .run("simple_query", self.client.simple_query(query))
         })
     }
 

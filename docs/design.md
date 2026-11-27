@@ -54,7 +54,7 @@ This is single-active process exclusion, not high availability. A standby design
 4. Required inputs are made valid in the gateway store.
 5. Equivalent requests join one durable shared build.
 6. The leader waits in a round-robin queue across quota subjects, FIFO within a subject.
-7. Telchar selects the first configured compatible backend and acquires its permit.
+7. Telchar acquires available compatible backend capacity by priority, then dependency-producer locality, then configuration order.
 8. The selected backend executes independently of requester attachment.
 9. Every declared output is returned to the gateway, validated, imported, and confirmed in the store.
 10. Telchar records one terminal result and replies using the normal Nix worker protocol.
@@ -63,7 +63,7 @@ One equivalent derivation has at most one active shared execution. The derivatio
 
 The first requester owns shared-build quota until terminal completion. Followers use the same execution and consume no extra execution slot or backend permit. Queue and active limits are transactional. Backend capacity is a separate gate, so an admitted build may wait for its selected backend permit. A permit-wait timeout fails that shared build rather than moving it to another backend. Static SSH readiness excludes unavailable targets from fresh selection; it does not authorize rerouting an execution after dispatch.
 
-Subject rotation spans the queued population, with at most 256 examinations per scheduling pass. A quota-saturated page retains its examination cursor for the next pass. Blocked waiters share a 250-millisecond recheck bound rather than each repeating a scheduling scan. Enqueue, session terminal transitions and completed recovery monitoring notify the scheduler; periodic rechecks preserve progress when notifications are missed or completion occurs outside those paths. These are subject-admission guarantees, not FIFO backend execution or a backend-locality promise.
+Subject rotation spans the queued population, with at most 256 examinations per scheduling pass. A quota-saturated page retains its examination cursor for the next pass. Blocked waiters share a 250-millisecond recheck bound rather than each repeating a scheduling scan. Enqueue, session terminal transitions and completed recovery monitoring notify the scheduler; periodic rechecks preserve progress when notifications are missed or completion occurs outside those paths. These are subject-admission guarantees, not FIFO backend execution or guaranteed backend locality. Producer locality is advisory within a priority tier: the router ranks backend identities by the sum of retained input NAR bytes attributed to each producer, without inspecting scheduler nodes. Scores saturate at `u64::MAX`; ties preserve configuration order. Missing producer records contribute nothing. The current input closure supplies ephemeral sizes; durable producer records and schema are unchanged. Each backend owns its location hint; Nomad uses soft node affinity, while SSH prefers a matching ready builder with capacity. Accepted execution stays bound to its exact backend regardless of preferred-location availability.
 
 Requester disconnect behavior is operator configuration:
 

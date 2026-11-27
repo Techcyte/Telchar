@@ -2,6 +2,232 @@
 
 use super::*;
 
+fn producer(backend: &str, location: &str, nar_size: u64) -> telchar::persistence::OutputProducer {
+    telchar::persistence::OutputProducer {
+        backend_name: backend.to_owned(),
+        backend_kind: BackendKind::Nomad,
+        location: Some(location.to_owned()),
+        nar_size,
+    }
+}
+
+#[test]
+fn execution_locality_weights_nodes_by_nar_bytes_and_bounds_overflow() {
+    let root = fixture_root();
+    let config = load_nomad_config(&root, "http://127.0.0.1:1", None);
+    let request = admitted_request();
+    let mut execution =
+        BuildExecution::new("weighted-locality", &request, Duration::from_secs(60)).unwrap();
+    let backend = config.target().name();
+    for (hints, expected) in [
+        (
+            vec![
+                producer(backend, "large", 1000),
+                producer(backend, "tiny", 1),
+                producer(backend, "tiny", 1),
+                producer(backend, "tiny", 1),
+            ],
+            "large",
+        ),
+        (
+            vec![
+                producer(backend, "a", 50),
+                producer(backend, "z", 25),
+                producer(backend, "z", 25),
+            ],
+            "z",
+        ),
+        (
+            vec![producer(backend, "z", 50), producer(backend, "a", 50)],
+            "z",
+        ),
+        (
+            vec![
+                producer(backend, "overflow", u64::MAX),
+                producer(backend, "overflow", 1),
+                producer(backend, "tiny", 2),
+            ],
+            "overflow",
+        ),
+        (
+            vec![
+                producer(backend, "a", u64::MAX),
+                producer(backend, "z", u64::MAX),
+                producer(backend, "a", 1),
+            ],
+            "z",
+        ),
+        (
+            vec![
+                producer("foreign", "foreign", u64::MAX),
+                producer(backend, "valid", 1),
+                producer(backend, "invalid node", u64::MAX),
+            ],
+            "valid",
+        ),
+    ] {
+        execution.set_producers(hints);
+        let job = telchar::nomad::backend::render_job_for_execution(
+            &config,
+            &execution,
+            request.shared_build_key().as_bytes(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(job["Job"]["Affinities"][0]["RTarget"], expected);
+        assert_eq!(job["Job"]["Affinities"][0]["Weight"], 50);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn executor_locality_weights_bytes_with_stable_ties_and_bounded_overflow() {
+    let root = fixture_root();
+    load_service_config(&root, "http://127.0.0.1:1", None);
+    let path = root.join("client.toml");
+    let first = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        format!("{first}\n{}", first.replace("nomad-test", "nomad-other")),
+    )
+    .unwrap();
+    let config = ServiceConfig::load_with_environment(&path, |_| None).unwrap();
+    let backends = ConfiguredBackends::new(&config, None).unwrap();
+    let names: Vec<_> = backends
+        .targets()
+        .map(|target| target.name().to_owned())
+        .collect();
+    let first = &names[0];
+    let second = &names[1];
+    let executor = backends
+        .executor(
+            telchar::persistence::Database::connect("postgresql://localhost/unused-locality")
+                .unwrap(),
+            Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+        )
+        .unwrap();
+    let request = admitted_request();
+    let mut execution =
+        BuildExecution::new("weighted-locality", &request, Duration::from_secs(60)).unwrap();
+    for (hints, expected) in [
+        (
+            vec![
+                producer(first, "node", 1),
+                producer(first, "node", 1),
+                producer(first, "node", 1),
+                producer(second, "node", 1000),
+            ],
+            second,
+        ),
+        (
+            vec![
+                producer(first, "node", 50),
+                producer(second, "node", 25),
+                producer(second, "node", 25),
+            ],
+            first,
+        ),
+        (
+            vec![
+                producer(second, "node", u64::MAX),
+                producer(second, "node", 1),
+                producer(first, "node", 2),
+            ],
+            second,
+        ),
+        (
+            vec![
+                producer(first, "node", u64::MAX),
+                producer(second, "node", u64::MAX),
+                producer(second, "node", 1),
+            ],
+            first,
+        ),
+        (
+            vec![producer(second, "node", 50), producer(first, "node", 50)],
+            first,
+        ),
+        (
+            vec![telchar::persistence::OutputProducer {
+                backend_kind: BackendKind::StaticSsh,
+                ..producer(second, "node", u64::MAX)
+            }],
+            first,
+        ),
+        (vec![producer("removed", "node", u64::MAX)], first),
+        (vec![], first),
+    ] {
+        execution.set_producers(hints);
+        let permit = executor.reserve_build(&execution, &[]).unwrap().unwrap();
+        assert_eq!(permit.target().name(), expected);
+        let fallback = executor.reserve_build(&execution, &[]).unwrap().unwrap();
+        assert_ne!(fallback.target().name(), expected);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn execution_locality_emits_only_backend_owned_soft_node_affinity() {
+    let root = fixture_root();
+    let config = load_nomad_config(&root, "http://127.0.0.1:1", None);
+    let request = admitted_request();
+    let mut execution = BuildExecution::new("locality", &request, Duration::from_secs(60)).unwrap();
+    let render = |execution: &BuildExecution<'_>| {
+        telchar::nomad::backend::render_job_for_execution(
+            &config,
+            execution,
+            request.shared_build_key().as_bytes(),
+            1,
+        )
+        .unwrap()
+    };
+    let ordinary = render(&execution);
+    execution.set_producers(vec![telchar::persistence::OutputProducer {
+        backend_name: config.target().name().to_owned(),
+        backend_kind: BackendKind::Nomad,
+        location: Some("missing-or-available-node".into()),
+        nar_size: 1,
+    }]);
+    let preferred = render(&execution);
+    assert_eq!(
+        preferred["Job"]["Affinities"],
+        serde_json::json!([{
+            "LTarget": "${node.unique.id}", "Operand": "=", "RTarget": "missing-or-available-node", "Weight": 50,
+        }])
+    );
+    assert_eq!(
+        preferred["Job"]["Constraints"],
+        ordinary["Job"]["Constraints"]
+    );
+    assert_eq!(preferred["Job"]["ID"], ordinary["Job"]["ID"]);
+    assert_eq!(
+        preferred["Job"]["TaskGroups"],
+        ordinary["Job"]["TaskGroups"]
+    );
+    execution.set_producers(vec![telchar::persistence::OutputProducer {
+        backend_name: "different-backend".into(),
+        backend_kind: BackendKind::Nomad,
+        location: Some("foreign-node".into()),
+        nar_size: 1,
+    }]);
+    assert_eq!(render(&execution), ordinary);
+    for hint in [
+        producer(config.target().name(), "invalid node", u64::MAX),
+        telchar::persistence::OutputProducer {
+            location: None,
+            ..producer(config.target().name(), "unused", u64::MAX)
+        },
+        telchar::persistence::OutputProducer {
+            backend_kind: BackendKind::StaticSsh,
+            ..producer(config.target().name(), "foreign-kind", u64::MAX)
+        },
+    ] {
+        execution.set_producers(vec![hint]);
+        assert_eq!(render(&execution), ordinary);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn renders_operator_selected_driver_and_stable_backend_bound_job() {
     let name = "rendering::renders_operator_selected_driver_and_stable_backend_bound_job";

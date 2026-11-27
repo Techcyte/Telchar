@@ -21,6 +21,40 @@ fn rejects_unsupported_execution_backends() {
 }
 
 #[test]
+fn stored_build_limits_are_validated_and_require_restart() {
+    let mut environment = Environment::default();
+    let root = fixture_root("stored-build-nodes");
+    let path = root.join("telchar.toml");
+    environment.set("TELCHAR_CONFIG", &path);
+    fs::write(&path, "").unwrap();
+    let default = load(&environment).unwrap();
+    assert_eq!(
+        default.stored_build_limits(),
+        telchar::build::StoredBuildLimits::default()
+    );
+    for (field, value) in [
+        ("maximum_stored_build_nodes", 8192),
+        ("maximum_stored_build_depth", 64),
+        ("maximum_stored_build_bytes", 134217728),
+    ] {
+        fs::write(&path, format!("{field} = {value}\n")).unwrap();
+        let configured = load(&environment).unwrap();
+        assert!(default.validate_static_ssh_reload(&configured).is_err());
+        let actual = match field {
+            "maximum_stored_build_nodes" => configured.stored_build_limits().maximum_nodes() as u64,
+            "maximum_stored_build_depth" => configured.stored_build_limits().maximum_depth() as u64,
+            _ => configured.stored_build_limits().maximum_bytes(),
+        };
+        assert_eq!(actual, value);
+        fs::write(&path, format!("{field} = 0\n")).unwrap();
+        assert!(load(&environment).is_err());
+    }
+    fs::write(&path, "maximum_stored_build_depth = 129\n").unwrap();
+    assert!(load(&environment).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn upload_audit_is_optional_and_strict() {
     let mut environment = Environment::default();
     let root = fixture_root("upload-audit");
