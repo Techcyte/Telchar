@@ -154,5 +154,10 @@ fn real_relay_trace_marks_boundaries_not_payload_or_each_buffer() {
     let filtered = capture(tracing::Level::INFO, || {
         telchar::service::ipc::copy_bounded(input.as_slice(), std::io::sink()).unwrap();
     });
-    assert!(filtered.is_empty(), "{filtered}");
+    assert!(filtered.contains("ipc.relay.completed"), "{filtered}");
+    assert!(filtered.contains("reason=\"source-eof\""), "{filtered}");
+    assert!(
+        filtered.contains(&format!("forwarded_bytes={}", input.len())),
+        "{filtered}"
+    );
 }

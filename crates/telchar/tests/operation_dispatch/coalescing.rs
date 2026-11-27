@@ -84,18 +84,23 @@ fn durable_client_join_survives_coordination_timeout() {
 
 #[test]
 fn real_output_fan_in_validates_one_nar() {
-    output_fan_in(None, false);
+    output_fan_in(None, false, false);
+}
+
+#[test]
+fn real_output_joiners_survive_original_requester_disconnect() {
+    output_fan_in(None, false, true);
 }
 
 #[test]
 fn collector_availability_preserves_real_output_fan_in() {
     let collector = collector::start_collector();
-    let connected = output_fan_in(Some(collector.endpoint()), false);
+    let connected = output_fan_in(Some(collector.endpoint()), false, false);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let unavailable = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
-    let outage = output_fan_in(Some(unavailable), false);
-    let disabled = output_fan_in(Some(collector.endpoint()), true);
+    let outage = output_fan_in(Some(unavailable), false, false);
+    let disabled = output_fan_in(Some(collector.endpoint()), true, false);
     eprintln!(
         "FAN_IN_EXPORTER connected_ms={} outage_ms={} disabled_ms={}",
         connected.as_millis(),
@@ -105,7 +110,7 @@ fn collector_availability_preserves_real_output_fan_in() {
     assert!(collector.has_log_event("gateway.output.validated"));
 }
 
-fn output_fan_in(endpoint: Option<String>, disabled: bool) -> Duration {
+fn output_fan_in(endpoint: Option<String>, disabled: bool, disconnect_leader: bool) -> Duration {
     let elapsed = Instant::now();
     let root = tempfile::tempdir().unwrap();
     let started = root.path().join("started");
@@ -177,22 +182,33 @@ fn output_fan_in(endpoint: Option<String>, disabled: bool) -> Duration {
             thread::spawn(move || read_build_success(output)),
         ));
     }
-    fs::write(&release, "release").unwrap();
-    let leader = thread::spawn(move || read_build_success(leader_output));
-    leader.join().unwrap().unwrap();
+    if disconnect_leader {
+        fixture.frontend.kill().unwrap();
+        fixture.frontend.wait().unwrap();
+        drop(leader_output);
+    } else {
+        fs::write(&release, "release").unwrap();
+        let leader = thread::spawn(move || read_build_success(leader_output));
+        leader.join().unwrap().unwrap();
+    }
+    if disconnect_leader {
+        fs::write(&release, "release").unwrap();
+    }
     for (mut follower, input, response) in followers {
         response.join().unwrap().unwrap();
         drop(input);
         assert!(follower.wait().unwrap().success());
     }
     drop(leader_input);
-    assert!(fixture.frontend.wait().unwrap().success());
+    if !disconnect_leader {
+        assert!(fixture.frontend.wait().unwrap().success());
+    }
     let lease_owners: i64 = fixture.database.connect().query_one(
         "SELECT count(DISTINCT owner_id) FROM store_leases WHERE purpose = 'output' AND state = 'active'", &[]
     ).unwrap().get(0);
     assert_eq!(
         lease_owners, 8,
-        "each coalesced requester retains retrieval authority"
+        "each requester, including a detached original, retains bounded retrieval authority"
     );
     let path = &build.expected_outputs()[0].1;
     let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
@@ -498,6 +514,20 @@ fn disconnected_follower_does_not_cancel_shared_build() {
 
 #[test]
 fn disconnected_leader_does_not_cancel_shared_build() {
+    disconnected_leader_result(false, false);
+}
+
+#[test]
+fn disconnected_leader_joiner_receives_result_after_database_restart() {
+    disconnected_leader_result(true, false);
+}
+
+#[test]
+fn disconnected_leader_joiner_receives_result_when_completion_overlaps_database_outage() {
+    disconnected_leader_result(true, true);
+}
+
+fn disconnected_leader_result(restart_database: bool, complete_during_outage: bool) {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-shared-build-leader-disconnect-{}-{}",
         std::process::id(),
@@ -508,6 +538,7 @@ fn disconnected_leader_does_not_cancel_shared_build() {
     let invocation_count = root.join("invocations");
     let started = root.join("started");
     let complete = root.join("complete");
+    let reported = root.join("reported");
     fs::write(
         &helper,
         format!(
@@ -518,6 +549,12 @@ fn disconnected_leader_does_not_cancel_shared_build() {
         ),
     )
     .expect("helper writes");
+    let script = fs::read_to_string(&helper).unwrap();
+    fs::write(
+        &helper,
+        format!("{script}printf reported > '{}'\n", reported.display()),
+    )
+    .unwrap();
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
     let mut fixture = FrontendFixture::spawn_multi_with_store(
         "unix:///fixed-gateway.sock",
@@ -554,11 +591,51 @@ fn disconnected_leader_does_not_cancel_shared_build() {
     fixture.frontend.wait().expect("leader reaps");
     drop(leader_input);
     drop(leader_output);
-    fs::write(&complete, b"complete").expect("helper completion releases");
-    follower.kill().expect("follower terminates");
-    follower.wait().expect("follower reaps");
+    if complete_during_outage {
+        fixture.database.stop();
+        fs::write(&complete, b"complete").expect("helper completes during database outage");
+        wait_for_file_for(
+            &reported,
+            Duration::from_secs(5),
+            "helper did not report during outage",
+        );
+        fixture.database.restart();
+    } else {
+        if restart_database {
+            fixture.database.restart();
+        }
+        fs::write(&complete, b"complete").expect("helper completion releases");
+    }
+    let response = thread::spawn(move || {
+        assert_eq!(read_integer(&mut follower_output), STDERR_LAST);
+        assert_eq!(
+            read_integer(&mut follower_output),
+            0,
+            "joiner receives Built"
+        );
+        assert_eq!(read_string(&mut follower_output), "", "no build error");
+        for _ in 0..6 {
+            read_integer(&mut follower_output);
+        }
+        let outputs = read_integer(&mut follower_output);
+        for _ in 0..outputs {
+            read_string(&mut follower_output);
+            read_string(&mut follower_output);
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !response.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "joiner result did not arrive after original requester disconnected"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    response
+        .join()
+        .expect("joiner reads complete success result");
     drop(follower_input);
-    drop(follower_output);
+    assert!(follower.wait().expect("follower reaps").success());
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x"

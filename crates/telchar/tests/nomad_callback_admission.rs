@@ -33,7 +33,12 @@ struct RecordingAllocationVerifier {
 }
 
 impl AllocationVerifier for RecordingAllocationVerifier {
-    fn verify_allocation(&self, allocation_id: &str, job_id: &str, task: &str) -> io::Result<()> {
+    fn verify_allocation(
+        &self,
+        allocation_id: &str,
+        job_id: &str,
+        task: &str,
+    ) -> io::Result<Option<String>> {
         self.calls.borrow_mut().push((
             allocation_id.to_owned(),
             job_id.to_owned(),
@@ -42,7 +47,7 @@ impl AllocationVerifier for RecordingAllocationVerifier {
         if self.reject {
             Err(io::Error::other("allocation rejected"))
         } else {
-            Ok(())
+            Ok(None)
         }
     }
 }

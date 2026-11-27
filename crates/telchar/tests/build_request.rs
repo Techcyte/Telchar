@@ -12,6 +12,9 @@ use nix_worker_protocol::{
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
 
+#[path = "build_request/graph.rs"]
+mod graph;
+
 #[test]
 fn admits_stored_request_with_store_builder() {
     let builder = "/nix/store/jnyfsf2mp08d1xyz2m72ic2vz2kcx0sd-bash-5.3p9/bin/bash";
@@ -384,6 +387,7 @@ fn loads_selected_input_derivation_outputs() {
         &mut backend,
         &mut roots,
         &backends("x86_64-linux", &[]),
+        Default::default(),
     )
     .expect("cold graph loads");
     assert_eq!(
@@ -413,6 +417,7 @@ fn loads_selected_input_derivation_outputs() {
         &mut backend,
         &mut roots,
         &backends("x86_64-linux", &[]),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -439,11 +444,12 @@ fn loads_selected_input_derivation_outputs() {
         &mut backend,
         &mut roots,
         &backends("x86_64-linux", &[]),
+        Default::default(),
     )
     .unwrap_err();
     assert_eq!(
         telchar::build::stored_load_failure_phase(&error),
-        Some(telchar::build::StoredLoadFailurePhase::DependencyParse)
+        Some(telchar::build::StoredLoadFailurePhase::DependencyCycle)
     );
 }
 

@@ -232,11 +232,21 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
 }
 
 pub trait AllocationVerifier {
-    fn verify_allocation(&self, allocation_id: &str, job_id: &str, task: &str) -> io::Result<()>;
+    fn verify_allocation(
+        &self,
+        allocation_id: &str,
+        job_id: &str,
+        task: &str,
+    ) -> io::Result<Option<String>>;
 }
 
 impl AllocationVerifier for NomadClient {
-    fn verify_allocation(&self, allocation_id: &str, job_id: &str, task: &str) -> io::Result<()> {
+    fn verify_allocation(
+        &self,
+        allocation_id: &str,
+        job_id: &str,
+        task: &str,
+    ) -> io::Result<Option<String>> {
         NomadClient::verify_allocation(self, allocation_id, job_id, task)
     }
 }
@@ -397,7 +407,7 @@ impl<A: AuthenticationVerifier, V: AllocationVerifier, R: ReplayAuthority>
         {
             return Err(invalid("Nomad callback request was replayed"));
         }
-        self.allocation.verify_allocation(
+        let producer_location = self.allocation.verify_allocation(
             &authentication.allocation_id,
             &authentication.job_id,
             &authentication.task,
@@ -405,6 +415,7 @@ impl<A: AuthenticationVerifier, V: AllocationVerifier, R: ReplayAuthority>
         Ok(AdmittedCallback {
             authentication,
             protocol,
+            producer_location,
         })
     }
 
@@ -416,9 +427,14 @@ impl<A: AuthenticationVerifier, V: AllocationVerifier, R: ReplayAuthority>
 pub struct AdmittedCallback {
     authentication: Authentication,
     protocol: ProtocolSession,
+    producer_location: Option<String>,
 }
 
 impl AdmittedCallback {
+    pub fn producer_location(&self) -> Option<&str> {
+        self.producer_location.as_deref()
+    }
+
     pub fn authentication(&self) -> &Authentication {
         &self.authentication
     }

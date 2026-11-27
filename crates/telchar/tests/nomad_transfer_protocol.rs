@@ -254,6 +254,22 @@ fn round_trips_exact_transfer_metadata_contracts() {
 }
 
 #[test]
+fn already_valid_result_has_exact_bounded_wire_metadata() {
+    let result = BuildResultMetadata {
+        outcome: BuildOutcome::AlreadyValid,
+        diagnostic: None,
+        nix_failure: None,
+    };
+    let wire = br#"{"outcome":"already-valid","diagnostic":null,"nix_failure":null}"#;
+    assert_eq!(encode_metadata(&result, wire.len()).unwrap(), wire);
+    assert_eq!(
+        decode_metadata::<BuildResultMetadata>(wire, wire.len()).unwrap(),
+        result
+    );
+    assert!(encode_metadata(&result, wire.len() - 1).is_err());
+}
+
+#[test]
 fn rejects_invalid_manifest_and_path_metadata() {
     let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
     let output = "/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned();

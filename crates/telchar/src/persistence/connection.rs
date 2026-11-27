@@ -148,6 +148,12 @@ impl Database {
                     Ok(connection) => connection,
                     Err(_) if self.request.is_some() => continue,
                     Err(error) => {
+                        tracing::warn!(
+                            event = "database.connection.checkout_failed",
+                            cause = "pool-timeout",
+                            ownership_observed = self.ownership.is_some(),
+                            "database pool checkout deadline exceeded"
+                        );
                         if let Some(owner) = &self.ownership {
                             owner.observe_connection_failure();
                         }

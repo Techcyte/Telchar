@@ -132,6 +132,7 @@ pub struct ServiceConfig {
     history_retention: Option<HistoryRetention>,
     log_retention: Option<LogRetention>,
     maximum_retained_input_bytes: u64,
+    stored_build_limits: crate::build::StoredBuildLimits,
     audit_enabled: bool,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
     hook_delivery_policy: crate::service::hook_delivery::HookDeliveryPolicy,
@@ -201,6 +202,10 @@ impl ServiceConfig {
 
     pub fn maximum_retained_input_bytes(&self) -> u64 {
         self.maximum_retained_input_bytes
+    }
+
+    pub fn stored_build_limits(&self) -> crate::build::StoredBuildLimits {
+        self.stored_build_limits
     }
 
     pub fn audit_enabled(&self) -> bool {
@@ -303,6 +308,7 @@ impl ServiceConfig {
             || self.history_retention != replacement.history_retention
             || self.log_retention != replacement.log_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
+            || self.stored_build_limits != replacement.stored_build_limits
             || self.audit_enabled != replacement.audit_enabled
             || self.post_build_hook != replacement.post_build_hook
             || self.hook_delivery_policy != replacement.hook_delivery_policy
@@ -549,6 +555,16 @@ impl ServiceConfig {
             return Err(invalid("retained input byte limit is invalid"));
         }
 
+        let defaults = crate::build::StoredBuildLimits::default();
+        let stored_build_limits = crate::build::StoredBuildLimits::new(
+            raw.maximum_stored_build_nodes
+                .unwrap_or(defaults.maximum_nodes()),
+            raw.maximum_stored_build_depth
+                .unwrap_or(defaults.maximum_depth()),
+            raw.maximum_stored_build_bytes
+                .unwrap_or(defaults.maximum_bytes()),
+        )?;
+
         let mut hook_delivery_policy = crate::service::hook_delivery::HookDeliveryPolicy::default();
         if let Some(section) = &raw.post_build_hook {
             hook_delivery_policy.concurrency = section
@@ -690,6 +706,7 @@ impl ServiceConfig {
             history_retention,
             log_retention,
             maximum_retained_input_bytes,
+            stored_build_limits,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
             post_build_hook,
             hook_delivery_policy,

@@ -372,6 +372,17 @@ impl BackendPool {
         timeout: Duration,
         available: impl Fn(&BackendTarget) -> bool,
     ) -> io::Result<BackendPermit> {
+        self.acquire_ranked_where(system, required_features, timeout, available, |_| 0)
+    }
+
+    pub fn acquire_ranked_where(
+        &self,
+        system: &str,
+        required_features: &[&str],
+        timeout: Duration,
+        available: impl Fn(&BackendTarget) -> bool,
+        locality: impl Fn(&BackendTarget) -> u64,
+    ) -> io::Result<BackendPermit> {
         let compatible = self
             .inner
             .targets
@@ -412,7 +423,10 @@ impl BackendPool {
             .iter()
             .filter(|target| target.supports(system, required_features) && available(target))
             .fold(None::<&BackendTarget>, |selected, target| match selected {
-                Some(current) if current.selection_priority() >= target.selection_priority() => {
+                Some(current)
+                    if (current.selection_priority(), locality(current))
+                        >= (target.selection_priority(), locality(target)) =>
+                {
                     selected
                 }
                 _ => Some(target),
@@ -445,8 +459,10 @@ impl BackendPool {
                         && permits[target.name()].active < permits[target.name()].maximum
                 })
                 .fold(None, |selected, (index, target)| match selected {
-                    Some((_, priority)) if priority >= target.selection_priority() => selected,
-                    _ => Some((index, target.selection_priority())),
+                    Some((_, rank)) if rank >= (target.selection_priority(), locality(target)) => {
+                        selected
+                    }
+                    _ => Some((index, (target.selection_priority(), locality(target)))),
                 })
                 .map(|(index, _)| index);
             if let Some(index) = index {
@@ -653,6 +669,8 @@ pub struct BuildExecution<'a> {
     build: &'a BuildRequest,
     timeout: Duration,
     target_name: Option<String>,
+    producers: Vec<crate::persistence::OutputProducer>,
+    input_closure: Option<Arc<Vec<crate::store::closure::ClosurePath>>>,
     trace_context: telchar_telemetry::TraceContext,
 }
 
@@ -677,6 +695,8 @@ impl<'a> BuildExecution<'a> {
             build,
             timeout,
             target_name: None,
+            producers: Vec::new(),
+            input_closure: None,
             trace_context: telchar_telemetry::TraceContext::default(),
         })
     }
@@ -706,6 +726,45 @@ impl<'a> BuildExecution<'a> {
 
     pub fn target_name(&self) -> Option<&str> {
         self.target_name.as_deref()
+    }
+
+    pub fn set_producers(&mut self, producers: Vec<crate::persistence::OutputProducer>) {
+        self.producers = producers;
+    }
+
+    pub fn producers(&self) -> &[crate::persistence::OutputProducer] {
+        &self.producers
+    }
+
+    pub fn set_input_closure(
+        &mut self,
+        closure: Vec<crate::store::closure::ClosurePath>,
+    ) -> io::Result<()> {
+        crate::store::closure::validate_input_closure(self.build.input_sources(), &closure, true)?;
+        self.input_closure = Some(Arc::new(closure));
+        Ok(())
+    }
+
+    pub fn input_closure(&self) -> Option<&[crate::store::closure::ClosurePath]> {
+        self.input_closure.as_deref().map(Vec::as_slice)
+    }
+
+    pub(crate) fn retained_input_closure(
+        &self,
+    ) -> Option<Arc<Vec<crate::store::closure::ClosurePath>>> {
+        self.input_closure.clone()
+    }
+
+    pub(crate) fn resolve_input_closure(
+        &self,
+        store: &mut dyn crate::store::closure::StoreClosureBackend,
+    ) -> io::Result<std::borrow::Cow<'_, [crate::store::closure::ClosurePath]>> {
+        if let Some(closure) = self.input_closure() {
+            return Ok(std::borrow::Cow::Borrowed(closure));
+        }
+        let closure = store.input_closure(self.build.input_sources())?;
+        crate::store::closure::validate_input_closure(self.build.input_sources(), &closure, false)?;
+        Ok(std::borrow::Cow::Owned(closure))
     }
 
     pub fn set_trace_context(&mut self, trace_context: telchar_telemetry::TraceContext) {
@@ -833,6 +892,14 @@ pub trait BuildBackend: Send {
         Ok(None)
     }
 
+    fn reserve_build(
+        &self,
+        execution: &BuildExecution<'_>,
+        required_features: &[&str],
+    ) -> io::Result<Option<BackendPermit>> {
+        self.reserve_target(execution.build().system(), required_features)
+    }
+
     fn selected_target(
         &self,
         _system: &str,
@@ -864,5 +931,174 @@ pub trait BuildBackend: Send {
 
     fn execute(&mut self, execution: &BuildExecution<'_>) -> io::Result<BuildResult> {
         self.execute_with_logs(execution, &mut |_| Ok(()), &mut || Ok(false))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod retained_input_tests {
+    use super::*;
+    use crate::store::closure::{ClosurePath, StoreClosureBackend};
+
+    pub(crate) fn request() -> BuildRequest {
+        let target =
+            BackendTarget::new("nomad", BackendKind::Nomad, "x86_64-linux", [] as [&str; 0])
+                .unwrap();
+        BuildRequest::from_stored_derivation(
+            b"/nix/store/22222222222222222222222222222222-test.drv",
+            br#"Derive([("out","/nix/store/11111111111111111111111111111111-test","","")],[],["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root"],"x86_64-linux","/bin/sh",[],[("out","/nix/store/11111111111111111111111111111111-test")])"#,
+            &[target],
+        ).unwrap()
+    }
+
+    pub(crate) fn metadata() -> Vec<ClosurePath> {
+        vec![ClosurePath {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root".into(),
+            nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            nar_size: 42,
+            references: vec![],
+            deriver: None,
+            content_address: None,
+        }]
+    }
+
+    struct CountingClosure {
+        queries: usize,
+        paths: Vec<ClosurePath>,
+    }
+    impl StoreClosureBackend for CountingClosure {
+        fn input_closure(&mut self, _: &[Vec<u8>]) -> io::Result<Vec<ClosurePath>> {
+            self.queries += 1;
+            Ok(self.paths.clone())
+        }
+    }
+
+    #[test]
+    fn retained_input_closure_skips_queries_and_clones_share_metadata() {
+        let request = request();
+        let mut execution =
+            BuildExecution::new("request", &request, Duration::from_secs(1)).unwrap();
+        execution.set_input_closure(metadata()).unwrap();
+        let cloned = execution.clone();
+        assert!(std::ptr::eq(
+            execution.input_closure().unwrap(),
+            cloned.input_closure().unwrap()
+        ));
+        let mut store = CountingClosure {
+            queries: 0,
+            paths: metadata(),
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                execution
+                    .resolve_input_closure(&mut store)
+                    .unwrap()
+                    .as_ref(),
+                metadata()
+            );
+        }
+        assert_eq!(
+            store.queries, 0,
+            "active execution must not traverse retained inputs again"
+        );
+    }
+
+    #[test]
+    fn reconstruction_expands_manual_roots_but_retained_metadata_requires_normalized_inputs() {
+        let request = request();
+        let mut paths = metadata();
+        let mut reference = paths[0].clone();
+        reference.store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-reference".into();
+        paths[0].references.push(reference.store_path.clone());
+        paths.push(reference);
+        let mut execution =
+            BuildExecution::new("request", &request, Duration::from_secs(1)).unwrap();
+        assert!(
+            execution.set_input_closure(paths.clone()).is_err(),
+            "extra paths require admission normalization"
+        );
+        assert!(execution.input_closure().is_none());
+        let mut store = CountingClosure {
+            queries: 0,
+            paths: paths.clone(),
+        };
+        assert_eq!(
+            execution
+                .resolve_input_closure(&mut store)
+                .unwrap()
+                .as_ref(),
+            paths
+        );
+        assert_eq!(store.queries, 1);
+        let mut normalized = request.clone();
+        normalized.set_input_closure(
+            paths
+                .iter()
+                .map(|path| path.store_path.as_bytes().to_vec())
+                .collect(),
+        );
+        let mut execution =
+            BuildExecution::new("request", &normalized, Duration::from_secs(1)).unwrap();
+        let mut missing_reference = paths.clone();
+        missing_reference.pop();
+        assert!(execution.set_input_closure(missing_reference).is_err());
+        execution.set_input_closure(paths.clone()).unwrap();
+        assert_eq!(
+            execution
+                .resolve_input_closure(&mut store)
+                .unwrap()
+                .as_ref(),
+            paths
+        );
+        assert_eq!(store.queries, 1);
+    }
+
+    #[test]
+    fn duplicate_admitted_roots_cannot_authorize_foreign_retained_metadata() {
+        let request = request();
+        let mut serialized = serde_json::to_value(&request).unwrap();
+        serialized["input_sources"] =
+            serde_json::json!([request.input_sources()[0], request.input_sources()[0]]);
+        let request = serde_json::from_value(serialized).unwrap();
+        let mut paths = metadata();
+        let mut foreign = paths[0].clone();
+        foreign.store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-foreign".into();
+        paths.push(foreign);
+        let mut execution =
+            BuildExecution::new("request", &request, Duration::from_secs(1)).unwrap();
+        assert!(execution.set_input_closure(paths).is_err());
+        assert!(execution.input_closure().is_none());
+    }
+
+    #[test]
+    fn absent_input_closure_reconstructs_and_incomplete_metadata_fails_closed() {
+        let request = request();
+        let mut execution =
+            BuildExecution::new("request", &request, Duration::from_secs(1)).unwrap();
+        let mut store = CountingClosure {
+            queries: 0,
+            paths: metadata(),
+        };
+        assert_eq!(
+            execution
+                .resolve_input_closure(&mut store)
+                .unwrap()
+                .as_ref(),
+            metadata()
+        );
+        assert_eq!(store.queries, 1);
+        store.paths.clear();
+        assert!(execution.resolve_input_closure(&mut store).is_err());
+        assert!(execution.set_input_closure(vec![]).is_err());
+        let mut invalid = metadata();
+        invalid[0].nar_size = 0;
+        assert!(execution.set_input_closure(invalid).is_err());
+        let mut invalid = metadata();
+        invalid[0]
+            .references
+            .push("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-absent".into());
+        assert!(execution.set_input_closure(invalid).is_err());
+        let mut invalid = metadata();
+        invalid.push(invalid[0].clone());
+        assert!(execution.set_input_closure(invalid).is_err());
     }
 }
