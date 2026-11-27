@@ -31,6 +31,8 @@ mod discovery;
 mod handshake;
 #[path = "ipc_frontend/history.rs"]
 mod history;
+#[path = "ipc_frontend/history_archive.rs"]
+mod history_archive;
 #[path = "ipc_frontend/inventory.rs"]
 mod inventory;
 #[path = "ipc_frontend/ownership.rs"]

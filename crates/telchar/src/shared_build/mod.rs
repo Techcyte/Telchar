@@ -243,11 +243,35 @@ impl SharedBuildFollower {
 pub struct SharedBuildRegistry {
     active: Mutex<HashMap<String, Arc<ActiveBuild>>>,
     callback_unavailable: std::sync::atomic::AtomicBool,
+    attempt_logs: Option<crate::service::archive::AttemptLogs>,
 }
 
 impl SharedBuildRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn recover_attempt_logs(
+        &self,
+        database: &crate::persistence::Database,
+    ) -> std::io::Result<()> {
+        match &self.attempt_logs {
+            Some(logs) => logs.recover(database),
+            None => Ok(()),
+        }
+    }
+
+    pub fn with_attempt_logs(mut self, logs: crate::service::archive::AttemptLogs) -> Self {
+        self.attempt_logs = Some(logs);
+        self
+    }
+
+    pub fn begin_attempt_logs(
+        &self,
+        database: &crate::persistence::Database,
+        attempt_id: i64,
+    ) -> Option<crate::service::archive::LogCapture> {
+        self.attempt_logs.as_ref()?.begin(database, attempt_id)
     }
 
     pub fn set_callback_available(&self, available: bool) {

@@ -96,8 +96,17 @@ let
       systemd.services.telchar-daemon.environment.TELCHAR_CONFIG = "/etc/telchar/telchar.toml";
       systemd.tmpfiles.rules = [
         "d /var/lib/telchar-static-ssh 0700 telchar-ingress telchar -"
+        "d /var/lib/telchar-log-spool 0700 telchar-ingress telchar -"
       ];
       environment.etc."telchar/telchar.toml".text = ''
+        [log_retention]
+        retention_days = 7
+        directory = "/var/lib/telchar-log-spool"
+        maximum_bytes = 1048576
+        maximum_queue_bytes = 1048576
+        maximum_captures = 4
+        maximum_spool_bytes = 16777216
+
         [[backends.ssh]]
         system = "${builderSystem}"
         maximum_concurrent_builds = 1

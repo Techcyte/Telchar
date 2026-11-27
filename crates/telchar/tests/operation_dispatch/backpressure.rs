@@ -54,8 +54,17 @@ fn unread_build_completion(real_store: bool, attach_follower: bool, completion_a
             telchar::backend::BackendTarget::new("local", kind, "x86_64-linux", [] as [&str; 0]).unwrap(),
         ]).unwrap()
     });
+    let archive_directory = root.path().join("logs");
+    let archive_config = root.path().join("service.toml");
+    if real_store {
+        fs::create_dir(&archive_directory).unwrap();
+        fs::write(&archive_config, format!("[log_retention]\nretention_days = 7\ndirectory = '{}'\nmaximum_bytes = 1048576\nmaximum_queue_bytes = 1048576\nmaximum_captures = 1\nmaximum_spool_bytes = 4194304\n[backends.local]\nname = 'local'\nsystem = 'x86_64-linux'\nmaximum_concurrent_builds = 1\n", archive_directory.display())).unwrap();
+    }
     let mut fixture = if real_store {
-        FrontendFixture::spawn_multi_with_store("unix:///nix/var/nix/daemon-socket/socket", [])
+        FrontendFixture::spawn_multi_with_store(
+            "unix:///nix/var/nix/daemon-socket/socket",
+            [("TELCHAR_CONFIG", archive_config.display().to_string())],
+        )
     } else {
         FrontendFixture::spawn_multi_with_store(
             "unix:///fixed-gateway.sock",
@@ -107,6 +116,29 @@ fn unread_build_completion(real_store: bool, attach_follower: bool, completion_a
         }
         thread::sleep(Duration::from_millis(10));
     };
+    if succeeded && real_store {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let row = fixture.database.connect().query_opt("SELECT object_key, complete, uncompressed_bytes FROM attempt_log_archives WHERE state = 'available'", &[]).unwrap();
+            if let Some(row) = row {
+                assert!(
+                    !row.get::<_, bool>(1),
+                    "bounded flood archive must report truncation"
+                );
+                let bytes = row.get::<_, i64>(2);
+                assert!(bytes > 0 && bytes <= 1048576);
+                let path: String = row.get(0);
+                let decoded = zstd::stream::decode_all(fs::File::open(path).unwrap()).unwrap();
+                assert_eq!(decoded.len() as i64, bytes);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "real local execution did not retain bounded logs"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
     if succeeded && completion_action == 2 {
         fixture.database.expire_singleton_ownership("daemon");
         let deadline = Instant::now() + Duration::from_secs(10);

@@ -797,6 +797,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     let span = tracing::info_span!("nomad.gateway.build_and_collect");
     let _entered = span.enter();
     let mut current: Option<OutputImport> = None;
+    let capture = shared_builds.begin_attempt_logs(database, attempt_id);
     let mut object_permit = None;
     let mut collecting = false;
     let mut _collection = None;
@@ -823,6 +824,9 @@ fn receive_build_outputs<S: io::Read + io::Write>(
             FrameKind::LogChunk => {
                 session.accept(Direction::WorkerToGateway, frame.clone())?;
                 tracing::debug!(event = "server.build.output", derivation_path, output = %String::from_utf8_lossy(frame.payload()));
+                if let Some(capture) = &capture {
+                    capture.push(frame.payload());
+                }
                 if publish_live_log(shared_builds, shared_build_key, frame.payload()) == 0 {
                     tracing::debug!(
                         event = "nomad.callback.log.unattached",
@@ -928,6 +932,9 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     ));
                 }
                 session.accept(Direction::WorkerToGateway, frame)?;
+                if let Some(capture) = capture {
+                    capture.finish();
+                }
                 if result.outcome == BuildOutcome::Failed {
                     return Ok(BuildCollectionOutcome::Failed {
                         diagnostic: result.diagnostic,
