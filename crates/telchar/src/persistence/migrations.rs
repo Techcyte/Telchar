@@ -186,9 +186,9 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0034_session_lease_owner_index.sql"),
     },
     Migration {
-        version: 35,
+        version: 38,
         name: "output_producers",
-        sql: include_str!("../../migrations/0035_output_producers.sql"),
+        sql: include_str!("../../migrations/0038_output_producers.sql"),
     },
 ];
 

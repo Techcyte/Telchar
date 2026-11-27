@@ -117,7 +117,7 @@ fn latest_migration_version_matches_resulting_schema() {
         telchar::persistence::latest_migration_version(),
         outcome.resulting_version
     );
-    assert_eq!(outcome.resulting_version, 35);
+    assert_eq!(outcome.resulting_version, 38);
 }
 
 #[test]
@@ -488,8 +488,8 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (36, 'future', decode(repeat('00', 32), 'hex'))",
-            &[],
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES ($1, 'future', decode(repeat('00', 32), 'hex'))",
+            &[&(telchar::persistence::latest_migration_version() + 1)],
         )
         .expect("future migration inserts");
 
