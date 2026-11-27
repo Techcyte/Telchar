@@ -185,6 +185,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "session_lease_owner_index",
         sql: include_str!("../../migrations/0034_session_lease_owner_index.sql"),
     },
+    Migration {
+        version: 35,
+        name: "ownership_renewal_lock",
+        sql: include_str!("../../migrations/0035_ownership_renewal_lock.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

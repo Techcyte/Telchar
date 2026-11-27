@@ -23,6 +23,10 @@ Database time determines acquisition, renewal, verification, and expiration. Pro
 
 Connections used by an owner carry its kind, token, and generation as PostgreSQL session settings. Statement-level triggers on Telchar's mutable durable tables verify that the configured generation still owns an unexpired lease. Reads and operator commands do not require ownership settings. Migrations remain separately serialized by their transaction advisory lock.
 
+Fencing triggers retain a `FOR KEY SHARE` row lock until the write transaction ends. Migration 35 pairs that lock with the non-partial unique index `singleton_ownership_identity(owner_kind, owner_token, generation)`. PostgreSQL therefore treats takeover identity changes as key-changing updates that conflict with in-flight fenced writes, while timestamp-only renewal can proceed. The index and trigger lock are one safety contract: changing to key-share without the identity index permits takeover to cross an active write. Do not drop the index or alter its key columns independently. Deletion also conflicts with the key-share lock. Lease expiration is still checked at each fenced statement; this does not grant a transaction perpetual authority.
+
+Migration installation creates the index and replaces the function atomically under the migration transaction. It may wait for existing transactions; do not apply it outside the authorized deployment/migration procedure. Applied migrations remain immutable. Rolling back to an older binary that does not recognize schema version 35 is not supported by the future-schema check.
+
 A replacement may acquire only after expiration. It receives a higher generation. Any surviving prior process is then unable to renew or mutate durable state. Its next renewal fails, causing fail-closed daemon shutdown and IPC socket removal.
 
 Transport uncertainty enters ownership recovery for both the daemon and local executor.
