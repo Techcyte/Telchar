@@ -13,6 +13,9 @@ use crate::backend::BackendTarget;
 mod derivation;
 mod outputs;
 
+const MAXIMUM_STORED_BUILD_NODES: usize = 4096;
+const MAXIMUM_STORED_BUILD_DEPTH: usize = 128;
+
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
 
@@ -25,6 +28,9 @@ pub enum StoredLoadFailurePhase {
     DependencyPath,
     DependencyExport,
     DependencyParse,
+    DependencyNodeLimit,
+    DependencyDepthLimit,
+    DependencyCycle,
     SelectedOutput,
     FinalValidation,
 }
@@ -39,6 +45,9 @@ impl StoredLoadFailurePhase {
             Self::DependencyPath => "dependency-path",
             Self::DependencyExport => "dependency-export",
             Self::DependencyParse => "dependency-parse",
+            Self::DependencyNodeLimit => "dependency-node-limit",
+            Self::DependencyDepthLimit => "dependency-depth-limit",
+            Self::DependencyCycle => "dependency-cycle",
             Self::SelectedOutput => "selected-output",
             Self::FinalValidation => "final-validation",
         }
@@ -167,12 +176,22 @@ impl<B: crate::store::export::StoreExportBackend + ?Sized> StoredBuilds<'_, B> {
         if self.completed.contains(&key) {
             return Ok(());
         }
-        if self.visiting.len() >= 128
-            || self.completed.len() + self.visiting.len() >= 1024
-            || !self.visiting.insert(key.clone())
-        {
-            return Err(stored_load_error(StoredLoadFailurePhase::DependencyParse));
+        let nodes = self.completed.len() + self.visiting.len();
+        let depth = self.visiting.len();
+        let failure = if self.visiting.contains(&key) {
+            Some(StoredLoadFailurePhase::DependencyCycle)
+        } else if depth >= MAXIMUM_STORED_BUILD_DEPTH {
+            Some(StoredLoadFailurePhase::DependencyDepthLimit)
+        } else if nodes >= MAXIMUM_STORED_BUILD_NODES {
+            Some(StoredLoadFailurePhase::DependencyNodeLimit)
+        } else {
+            None
+        };
+        if let Some(phase) = failure {
+            tracing::warn!(event = "gateway.stored_graph.rejected", phase = phase.as_str(), derivation_path = %path.display(), nodes, depth, node_limit = MAXIMUM_STORED_BUILD_NODES, depth_limit = MAXIMUM_STORED_BUILD_DEPTH, "stored dependency graph rejected");
+            return Err(stored_load_error(phase));
         }
+        self.visiting.insert(key.clone());
         self.roots.retain(&key)?;
         let (request, inputs) = BuildRequest::load_stored_with_inputs(
             path,
@@ -192,8 +211,10 @@ impl<B: crate::store::export::StoreExportBackend + ?Sized> StoredBuilds<'_, B> {
                 &mut self.remaining_bytes,
                 &mut self.derivations,
             )?;
-            let input = derivation::parse(&contents)
-                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
+            let input = derivation::parse(&contents).map_err(|error| {
+                tracing::warn!(event = "gateway.stored_dependency.rejected", derivation_path = %input_path.display(), diagnostic = %error, "stored dependency parsing failed");
+                stored_load_error(StoredLoadFailurePhase::DependencyParse)
+            })?;
             let mut missing = false;
             for name in output_names {
                 let (_, output, _, _) = input
@@ -353,8 +374,10 @@ impl BuildRequest {
             let input_contents =
                 load_cached_derivation(input_path, backend, remaining_bytes, derivations)
                     .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
-            let input = derivation::parse(&input_contents)
-                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
+            let input = derivation::parse(&input_contents).map_err(|error| {
+                tracing::warn!(event = "gateway.stored_dependency.rejected", derivation_path = %input_path.display(), diagnostic = %error, "stored dependency parsing failed");
+                stored_load_error(StoredLoadFailurePhase::DependencyParse)
+            })?;
             for output_name in output_names {
                 let output_path = input
                     .outputs
