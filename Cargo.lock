@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "nix-worker-protocol"
-version = "2026.11.7"
+version = "2026.11.8"
 dependencies = [
  "proptest",
  "serde_json",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "telchar"
-version = "2026.11.7"
+version = "2026.11.8"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2614,7 +2614,7 @@ dependencies = [
 
 [[package]]
 name = "telchar-nomad-worker"
-version = "2026.11.7"
+version = "2026.11.8"
 dependencies = [
  "base64 0.23.1",
  "hmac",
@@ -2643,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "telchar-telemetry"
-version = "2026.11.7"
+version = "2026.11.8"
 dependencies = [
  "futures-executor",
  "libc",
